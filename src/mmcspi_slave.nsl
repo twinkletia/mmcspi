@@ -1,0 +1,157 @@
+#include "mmcspi_slave.h"
+
+#define CMD0 	0x40_00_00_00_00_95
+#define CMD1    0x41_00_00_00_00_f9
+/* 512 byte */
+#define CMD16	0x50_00_00_02_00_01
+#define CMD17	0x51_00_00_00_00_01
+#define CMD24	0x58_00_00_00_00_01
+
+module mmcspi_slave {
+	state_name s0, s1, s2, s3, s4, s5, s6, s7, s8;
+	reg cmd_buf[48] = -1;
+	reg cmd_buf_bit_pos[6] = 0;
+	func_self rising_edge;
+	reg clk_prev = 0;
+	reg mosi = 1;
+	reg response_buf[40] = 0;
+	reg response_buf_bit_pos[8] = 0;
+	reg response_size[8] = 0;
+	reg read_op = 0;
+	reg write_op = 0;
+	reg block_bit_pos[16] = 0;
+	reg block_size[16] = 4096;
+	reg block_data[4096] = 0;
+	reg start_byte[8] = 0xfe;
+	reg start_byte_buf[8] = 0;
+
+	clk_prev := SCLK;
+	
+	if(~clk_prev && SCLK) {
+		rising_edge();
+		mosi := MOSI;
+	}
+	state s0 {
+		if((CS == LOW) && rising_edge) {
+			goto s1;
+		}
+		MISO = HIGH;
+	}
+	state s1 {
+		if(rising_edge) {
+			if(cmd_buf_bit_pos == 48-1) {
+				cmd_buf_bit_pos := 0;
+				goto s2;
+			} else {
+				cmd_buf_bit_pos++;
+			}
+			cmd_buf := {cmd_buf[46:0], mosi};
+		}
+		MISO = HIGH;
+	}
+	state s2 {
+		if(rising_edge) {
+			any {
+				cmd_buf == CMD0:	{response_buf := 0x000000001; response_size := 8-1; goto s3;}
+				cmd_buf == CMD1:	{response_buf := 0x000000000; response_size := 8-1; goto s3;}
+				cmd_buf == CMD16:	{response_buf := 0x000000000; response_size := 8-1; goto s3;}
+				(cmd_buf&0xff0000000001) == CMD17:	{
+					response_buf := 0x00000000fe; response_size := 16-1;	//[15:8]00 = recv_cmd17_resp [7:0]fe = master.start_byte
+				 	read_op := 1; block_bit_pos := 4096-1;
+					read(cmd_buf[39:8]);
+				   	block_size := 4096-1;
+				    goto s3;}
+				(cmd_buf&0xff0000000001) == CMD24:	{
+					response_buf := 0x0000000000; response_size := 8-1;		//[7:0]fe = recv_cmd24_resp
+				 	write_op := 1; block_bit_pos := 0;
+				   	block_size := 4096-1;
+				    goto s3;}
+				else: goto s0;
+			}
+		}
+		MISO = HIGH;
+	}
+	func block_data_valid {
+		block_data := read_block_data;
+	}
+	state s3 {
+		if(rising_edge) {
+			if(response_buf_bit_pos == response_size) {
+				response_buf_bit_pos := 0;
+				if(read_op) {
+					goto s4;
+				}else if(write_op){
+					goto s5;
+				}else {
+					goto s0;
+				}
+			} else {
+				response_buf_bit_pos++;
+			}
+		}
+		MISO = response_buf[response_size-response_buf_bit_pos];
+	}
+	state s4 {
+		if(rising_edge) {
+			if(block_bit_pos == 0) {
+				block_bit_pos := 4096-1;
+				read_op := 0;
+				goto s0;
+			} else {
+				block_bit_pos--;
+			}
+		}
+		MISO = block_data[block_bit_pos];
+	}
+	state s5{	//recv start byte
+		if(rising_edge) {
+				if({start_byte_buf[6:0], mosi} == start_byte) {
+					start_byte_buf := 0;
+					goto s6;
+				} else {
+					start_byte_buf := {start_byte_buf[6:0], mosi};
+				}
+			}
+		MISO = HIGH;
+	}
+	state s6{	//send block data
+			if(rising_edge) {
+				if(block_bit_pos == (4096-1)) {
+					//valid({data_block[4094:0], miso});
+					block_bit_pos := 0;
+					goto s7;
+				} else {
+					block_bit_pos++;
+				}
+				block_data := {block_data[4094:0], mosi};
+			}
+		MISO = HIGH;
+	}
+	state s7{	//recv crc
+		reg crc_bit_pos[4] = 0;
+
+			if(rising_edge) {
+				if(crc_bit_pos == (16-1)) {
+					crc_bit_pos := 0;
+					goto s8;
+				} else {
+					crc_bit_pos++;
+				}
+				//crc := {crc[14:0], miso};
+			}
+		MISO = HIGH;
+	}
+	state s8{	//send data resp
+		if(rising_edge) {
+			if(response_buf_bit_pos == 7) {
+				response_buf_bit_pos := 0;
+				write_op := 0;
+				write(cmd_buf[39:8], block_data);
+				goto s0;
+			} else {
+				response_buf_bit_pos++;
+			}
+		}
+		MISO = LOW;//response_buf[response_size-response_buf_bit_pos];
+	}
+}
