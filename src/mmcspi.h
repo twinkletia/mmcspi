@@ -24,6 +24,10 @@ declare mmcspi
     func_out load_access_fault();
     func_out store_amo_access_fault();
     func_out interrupt_req();
+#ifdef DEBUG
+    output debugstatus[32];
+    func_out debug_status(debugstatus);
+#endif
 }
 
 struct command_token_t
@@ -46,7 +50,7 @@ struct response_1_t
 
 struct status_t
 {
-    // x[29];
+    interrupt_enable[1];
     error[1];
     idle[1];
     inited[1];
