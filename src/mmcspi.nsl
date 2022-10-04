@@ -433,6 +433,10 @@ module mmcspi {
 					if(data_resp != 0x00) {
 						status.error := HIGH;
 					}
+					operation.write := LOW;
+					if(status.interrupt_enable){
+						interrupt_req();
+					}
 					data_resp_bit_pos := 7;
 					goto s1;
 				} else {
@@ -443,8 +447,6 @@ module mmcspi {
 			CS = LOW;
 			SCLK = clk;
 			MOSI = HIGH;
-
-			operation.write := LOW;
 		}
 	}
 	func read {
