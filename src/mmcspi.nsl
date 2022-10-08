@@ -734,7 +734,7 @@ module mmcspi {
 			write_adrs == 12'(0x1f4): {write_data_block[2] := wdata; valid();}
 			write_adrs == 12'(0x1f8): {write_data_block[1] := wdata; valid();}
 			write_adrs == 12'(0x1fc): {write_data_block[0] := wdata; valid();}
-			write_adrs == 12'(0x200): {old_data = status; status.interrupt_enable := wdata[3]; status.error := wdata[2]; valid(); debug_status(32'(status));}
+			write_adrs == 12'(0x200): {old_data = status; status.interrupt_enable := wdata[3]; status.error := wdata[2]; valid();}
 			write_adrs == 12'(0x210): {old_data = operation; operation := wdata; valid();}
 			//write_adrs == 12'(0x214): {old_data = operation_adrs; operation_adrs := new_data; valid();}
 			write_adrs == 12'(0x214): {old_data = operation_adrs; operation_adrs := wdata; valid();}
