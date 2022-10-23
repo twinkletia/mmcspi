@@ -62,7 +62,7 @@ module mmcspi_slave {
 				   	block_size := 4096-1;
 				    goto s3;}
 				(cmd_buf&0xff0000000001) == CMD24:	{
-					response_buf := 0x0000000000; response_size := 8-1;		//[7:0]fe = recv_cmd24_resp
+					response_buf := 0x0000000000; response_size := 8-1;		//[7:0]00 = recv_cmd24_resp
 				 	write_op := 1; block_bit_pos := 0;
 				   	block_size := 4096-1;
 				    goto s3;}
@@ -105,7 +105,7 @@ module mmcspi_slave {
 	}
 	state s5{	//recv start byte
 		if(rising_edge) {
-				if({start_byte_buf[6:0], mosi} == start_byte) {
+				if({start_byte_buf[6:0], MOSI} == start_byte) {
 					start_byte_buf := 0;
 					goto s6;
 				} else {
@@ -142,6 +142,7 @@ module mmcspi_slave {
 		MISO = HIGH;
 	}
 	state s8{	//send data resp
+		reg write_response[8] = 0x05;
 		if(rising_edge) {
 			if(response_buf_bit_pos == 7) {
 				response_buf_bit_pos := 0;
@@ -152,6 +153,6 @@ module mmcspi_slave {
 				response_buf_bit_pos++;
 			}
 		}
-		MISO = LOW;//response_buf[response_size-response_buf_bit_pos];
+		MISO = write_response[response_size-response_buf_bit_pos];//response_buf[response_size-response_buf_bit_pos];
 	}
 }
