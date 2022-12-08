@@ -1,0 +1,867 @@
+#include "mmcspi.h"
+
+#define MEM_WORD        3'b010
+#define MEM_HALFWORD    3'b001
+#define MEM_BYTE        3'b000
+
+#define CLK_100KHZ_COUNT 250
+#define TM_1MS_COUNT	65535
+#define DUMMY_CLOCK_COUNT 80
+#define SIZE_1_BYTE		8
+#define SIZE_5_BYTE		40
+#define CSB 0 //cmd_start_bit
+#define CTB 1 //cmd_transmission_bit
+#define CRC 0x00
+#define CMD17_18_24_TOKEN 8'b11111110
+#define CMD25_TOKEN 8'b11111100
+#define CMD25_STOP 8'b11111101
+#define ACCEPTED 4'b0101
+#define RES_R1B 2'b00
+#define RES_R1 2'b01
+#define RES_R2 2'b10
+#define RES_R3 2'b11
+
+module mmcspi {
+	reg clk_cnt[8] = 0;
+	reg clk_100khz = 0;
+	reg clk_25mhz = 0;
+	reg clk_prev_100khz = 0;
+	reg clk_prev_25mhz = 0;
+	reg clk_prev_m_clock = 0;
+	wire clk_prev;
+	wire clk;
+	func_self falling_edge();
+	func_self rising_edge();
+	reg miso_r = 1;
+	wire miso;
+	proc_name init();
+	proc_name idle();
+	reg cmd_buf[48];
+	reg response[2];
+	reg response_buf[40];
+    reg error[8];
+    reg data_resp[8] = -1;
+	proc_name send_cmd(cmd_buf, response);
+	proc_name receive_response(response_buf, response);
+	reg read_data_block[4096] = -1;
+	mem write_data_block[128][32];//reg write_data_block[4096] = -1;
+
+	wire response_upper[32];
+	wire response_lower[32];
+	operation_t reg operation = 0;
+	reg operation_adrs[32] = 0;
+	status_t reg status = 0;
+
+	clk = if(status.inited) clk_25mhz else clk_100khz;
+	clk_prev = if(status.inited) clk_prev_25mhz else clk_prev_100khz;
+	miso = if(status.inited) MISO else miso_r;
+	if(((((clk_cnt == CLK_100KHZ_COUNT)) && ~clk && ~~clk_prev) && ~status.inited) || (clk && ~clk_prev && status.inited)) {
+		rising_edge();
+	}
+	if(((((clk_cnt == CLK_100KHZ_COUNT)) && ~~clk && ~clk_prev) && ~status.inited) || (~clk && clk_prev && status.inited)) {
+		falling_edge();
+	}
+	/*
+	if(rising_edge) {
+		miso_r := MISO;
+	}
+	*/
+	if((clk_cnt == CLK_100KHZ_COUNT) && ~status.inited) {
+		miso_r := MISO;
+	} else if(status.inited) {
+		miso_r := MISO;
+	}
+	if(clk_cnt == CLK_100KHZ_COUNT) {
+		clk_cnt := 0;
+		clk_100khz := ~clk_100khz;
+		clk_prev_100khz := clk_100khz;
+	} else {
+		clk_cnt++;
+	}
+	clk_25mhz := ~clk_25mhz;
+	clk_prev_25mhz := clk_25mhz;
+
+	func reset {
+		status.inited := 0;
+		init();
+	}
+	proc init {
+		state_name poweron, dummy_clock, recv_cmd0_resp, recv_cmd1_resp, recv_cmd16_resp;
+
+		state poweron {
+			reg poweron_cnt[16] = 0;
+
+			if(poweron_cnt == TM_1MS_COUNT) {
+				if(rising_edge) {
+					poweron_cnt := 0;
+
+					goto dummy_clock;
+				}
+			} else {
+				poweron_cnt++;
+			}
+			CS = LOW;
+			SCLK = LOW;
+			MOSI = LOW;
+		}
+		state dummy_clock {
+			reg dummy_clock_cnt[7] = 0;
+
+			if(rising_edge) {
+				if(dummy_clock_cnt == DUMMY_CLOCK_COUNT) {
+					dummy_clock_cnt := 0;
+
+					send_cmd(CMD0, RES_R1);
+					goto recv_cmd0_resp;
+				} else {
+					dummy_clock_cnt++;
+				}
+			}
+			CS = HIGH;
+			SCLK = clk;
+			MOSI = HIGH;
+		}
+		state recv_cmd0_resp {
+			if(rising_edge) {
+				if(response_buf[7:0] == 0x01){
+					send_cmd(CMD1, RES_R1);
+					goto recv_cmd1_resp;
+					#ifdef CV
+					#endif
+				}else{
+					send_cmd(CMD0, RES_R1);
+				}
+			}
+			CS = HIGH;
+			SCLK = clk;
+			MOSI = HIGH;
+		}
+		state recv_cmd1_resp{
+			if(rising_edge) {
+				if(response_buf[7:0] == 0x00) {
+					send_cmd(CMD16, RES_R1);
+					goto recv_cmd16_resp;
+					#ifdef CV
+					#endif
+				}else{
+					send_cmd(CMD1, RES_R1);
+					#ifdef CV
+					#endif
+				}
+			}
+			CS = HIGH;
+			SCLK = clk;
+			MOSI = HIGH;
+		}
+		state recv_cmd16_resp {
+			if(rising_edge) {
+
+				goto poweron;
+				idle();
+					#ifdef CV
+					#endif
+			}
+			CS = HIGH;
+			SCLK = clk;
+			MOSI = HIGH;
+		}
+	}
+	proc send_cmd {
+		reg cmd_buf_bit_pos[7] = 48;
+
+		if(rising_edge) {
+			if((cmd_buf_bit_pos-1) == 0) {
+				cmd_buf_bit_pos := 48;
+				receive_response(0xffffffffff, response);
+					#ifdef CV
+					#endif
+			} else {
+				cmd_buf_bit_pos--;
+			}
+		}
+		/*
+		if(falling_edge) {
+			if((cmd_buf_bit_pos-1) != 0) {
+			}
+		}
+		*/
+		CS = LOW;
+		SCLK = clk;
+		MOSI = cmd_buf[cmd_buf_bit_pos-1];
+	}
+	proc receive_response {
+		reg response_buf_bit_pos[6] = 0;
+		state_name receive_start_bit, receive_response_body, r1b_busy_wait;
+        reg response_size[6] = 0;
+		
+		state receive_start_bit {
+			if(miso == LOW) {
+				if(rising_edge) {
+					response_buf := {response_buf[38:0], miso};
+					response_buf_bit_pos++;
+                    any{
+                        response[1] == 0: response_size := 8; //RES_R1 or RES_R1B
+                        response == RES_R2: response_size := 16;
+                        response == RES_R3: response_size := 40;
+                    }
+					goto receive_response_body;
+					#ifdef CV
+					#endif
+				}
+			}
+		}
+		state receive_response_body {
+			if(rising_edge) {
+				if(response_buf_bit_pos == (response_size-1)) {
+					response_buf_bit_pos := 0;
+                    any{
+                        response[1] == 0: error := {response_buf[6:0],miso}; //RES_R1 or RES_R1B
+                        response == RES_R2: error := {response_buf[14:8],miso};
+                        response == RES_R3: error := {response_buf[38:32],miso};
+                    }
+                    if(response == RES_R1B){
+                        goto r1b_busy_wait;
+                    }else if(!status.inited) {
+						init();
+					    goto receive_start_bit;
+					} else {
+						idle();
+					    goto receive_start_bit;
+					}
+					#ifdef CV
+					#endif
+				} else {
+					response_buf_bit_pos++;
+				}
+				response_buf := {response_buf[38:0], miso};
+			}
+		}
+        state r1b_busy_wait {
+            reg r1b_busy[8] = 0;
+			if(rising_edge) {
+                if({r1b_busy[6:0],miso} == 0xFF) {
+                    idle();
+                    goto receive_start_bit;
+                }
+				r1b_busy := {r1b_busy[6:0], miso};	
+			}
+        }
+		CS = LOW;
+		SCLK = clk;
+		MOSI = HIGH;
+	}
+	proc idle {
+		state_name s0, s1, dummy;
+		state_name recv_cmd17_resp, recv_data_packet_start_byte, recv_data_packet_data_block, recv_data_packet_crc;
+		state_name recv_cmd24_resp, send_data_packet_start_byte, send_data_packet_data_block, send_data_packet_crc, recv_data_resp;
+		reg start_byte_buf[8] = 0;
+		reg start_byte[8] = 0xfe;
+		reg crc[16] = 0;
+
+		status.inited := HIGH;
+
+		state s0 {
+			reg s0_cnt[8] = 0;
+			/* change 100khz to 25mhz, sync to rising_edge */
+			if(rising_edge) {
+				if(s0_cnt == 0xff) {
+					s0_cnt := 0;
+					goto s1;
+				} else {
+					s0_cnt++;
+				}
+			}
+			CS = HIGH;
+			SCLK = LOW;
+			MOSI = HIGH;
+
+		}
+        cmd[6]
+        arg[32]
+        data_token[8]
+        any {
+            cmd == 9:scsd
+            cmd == 10:scid
+            cmd == 17:rsb
+            cmd == 18:rmb
+            cmd == 23:sbc (r/w)
+            cmd == 24:wsb
+            cmd == 25:wmb
+        }
+        response[32];
+        
+
+		state s1 {
+            wire res[2];
+            if(status.exec == HIGH){
+                any {
+                    cmd == 27 || cmd == 28 || cmd == 29 || cmd == 38 || cmd == 42: res = RES_R1B;
+                    cmd == 13: res = RES_R2;
+                    cmd == 58: res = RES_R3;
+                    else: res = RES_R1;
+                }
+                send_cmd({CSB,CTB,cmd,arg,CRC},res);
+                goto s2;
+                status.exec := LOW;
+            }
+		    status.idle := !status.exec;
+			CS = HIGH;
+			SCLK = clk;
+			MOSI = HIGH;
+		}
+        state s2{
+            if(error == 0x00){
+                any {
+                    cmd == 9 | cmd == 10 | cmd == 17 | cmd == 18: goto recv_data_packet_start_byte;
+                    cmd == 24 | cmd == 25: goto send_data_packet_start_byte;
+                }
+            }else{
+                status.error := HIGH;
+                goto s1;
+            }
+			start_byte_buf := {start_byte_buf[6:0], miso};
+			CS = HIGH;
+			SCLK = clk;
+			MOSI = HIGH;
+        }
+		state recv_data_packet_start_byte {
+			if(rising_edge) {
+				if({start_byte_buf[6:0], miso} == start_byte) {
+					start_byte_buf := 0;
+					goto recv_data_packet_data_block;
+					#ifdef CV
+					#endif
+				} else {
+					start_byte_buf := {start_byte_buf[6:0], miso};
+				}
+			}
+			CS = LOW;
+			SCLK = clk;
+			MOSI = HIGH;
+
+		}
+		state recv_data_packet_data_block {
+			reg data_block_bit_pos[13] = 0;
+
+			if(rising_edge) {
+				if(data_block_bit_pos == (4096-1)) {
+					//valid({data_block[4094:0], miso});
+					data_block_bit_pos := 0;
+					goto recv_data_packet_crc;
+					#ifdef CV
+					#endif
+				} else {
+					data_block_bit_pos++;
+				}
+				read_data_block := {read_data_block[4094:0], miso};
+			}
+			CS = LOW;
+			SCLK = clk;
+			MOSI = HIGH;
+
+		}
+		state recv_data_packet_crc {
+			reg crc_bit_pos[4] = 0;
+
+			if(rising_edge) {
+				if(crc_bit_pos == (16-1)) {
+					crc_bit_pos := 0;
+					goto dummy;
+					#ifdef CV
+					#endif
+				} else {
+					crc_bit_pos++;
+				}
+				crc := {crc[14:0], miso};
+			}
+			CS = LOW;
+			SCLK = clk;
+			MOSI = HIGH;
+
+		}
+		state dummy {
+			if(rising_edge) {
+				goto s1;
+					#ifdef CV
+					#endif
+			}
+			operation.read := LOW;
+			if(status.interrupt_enable){
+				interrupt_req();
+			}
+			CS = LOW;
+			SCLK = clk;
+			MOSI = HIGH;
+		}
+		state recv_cmd24_resp {
+			if(rising_edge) {
+				if(response_buf[7:0] == 0x00) {
+					goto send_data_packet_start_byte;
+					#ifdef CV
+					if(SW[5]){
+						debug_led_2();
+					}
+					#endif
+				} else {
+					status.error := HIGH;
+					goto s1;
+				}
+			}
+			CS = HIGH;
+			SCLK = clk;
+			MOSI = HIGH;
+
+		}
+		state send_data_packet_start_byte {
+			reg start_byte_send_bit_pos[3] = 7;
+
+			if(rising_edge) {
+				if(start_byte_send_bit_pos == 0) {
+					start_byte_send_bit_pos := 7;
+					goto send_data_packet_data_block;
+					#ifdef CV
+					if(SW[5]){
+						debug_led_3();
+					}
+					#endif
+				} else {
+					start_byte_send_bit_pos--;
+				}
+			}
+			CS = LOW;
+			SCLK = clk;
+			MOSI = start_byte[start_byte_send_bit_pos];
+
+		}
+		state send_data_packet_data_block {
+			//reg write_data_block_bit_pos[12] = 4095;
+			reg write_data_column[7] = 127;
+			reg write_data_row[5] = 31;
+			wire sending_word[32];
+			
+			if(rising_edge) {
+				if(write_data_column == 0 && write_data_row == 0) {
+					//write_data_block_bit_pos := 4095;
+					write_data_column := 127;
+					write_data_row := 31;
+					goto send_data_packet_crc;
+					#ifdef CV
+					if(SW[5]){
+						debug_led_4();
+					}
+					#endif
+				} else if(write_data_row != 0){
+					//write_data_block_bit_pos--;
+					write_data_row--;
+				} else if(write_data_row == 0){
+					write_data_column--;
+					write_data_row := 31;
+				}
+			}
+			sending_word = write_data_block[write_data_column];
+			CS = LOW;
+			SCLK = clk;
+			any {
+				write_data_row == 31:{MOSI=sending_word[31];}
+				write_data_row == 30:{MOSI=sending_word[30];}
+				write_data_row == 29:{MOSI=sending_word[29];}
+				write_data_row == 28:{MOSI=sending_word[28];}
+				write_data_row == 27:{MOSI=sending_word[27];}
+				write_data_row == 26:{MOSI=sending_word[26];}
+				write_data_row == 25:{MOSI=sending_word[25];}
+				write_data_row == 24:{MOSI=sending_word[24];}
+				write_data_row == 23:{MOSI=sending_word[23];}
+				write_data_row == 22:{MOSI=sending_word[22];}
+				write_data_row == 21:{MOSI=sending_word[21];}
+				write_data_row == 20:{MOSI=sending_word[20];}
+				write_data_row == 19:{MOSI=sending_word[19];}
+				write_data_row == 18:{MOSI=sending_word[18];}
+				write_data_row == 17:{MOSI=sending_word[17];}
+				write_data_row == 16:{MOSI=sending_word[16];}
+				write_data_row == 15:{MOSI=sending_word[15];}
+				write_data_row == 14:{MOSI=sending_word[14];}
+				write_data_row == 13:{MOSI=sending_word[13];}
+				write_data_row == 12:{MOSI=sending_word[12];}
+				write_data_row == 11:{MOSI=sending_word[11];}
+				write_data_row == 10:{MOSI=sending_word[10];}
+				write_data_row == 9:{MOSI=sending_word[9];}
+				write_data_row == 8:{MOSI=sending_word[8];}
+				write_data_row == 7:{MOSI=sending_word[7];}
+				write_data_row == 6:{MOSI=sending_word[6];}
+				write_data_row == 5:{MOSI=sending_word[5];}
+				write_data_row == 4:{MOSI=sending_word[4];}
+				write_data_row == 3:{MOSI=sending_word[3];}
+				write_data_row == 2:{MOSI=sending_word[2];}
+				write_data_row == 1:{MOSI=sending_word[1];}
+				write_data_row == 0:{MOSI=sending_word[0];}
+			}
+			//MOSI = write_data_block[write_data_block_bit_pos];
+
+		}
+		state send_data_packet_crc {
+			reg crc_send_bit_pos[4] = 15;
+			
+			if(rising_edge) {
+				if(crc_send_bit_pos == 0) {
+					crc_send_bit_pos := 15;
+					goto recv_data_resp;
+					#ifdef CV
+					if(SW[5]){
+						debug_led_5();
+					}
+					#endif
+				} else {
+					crc_send_bit_pos--;
+				}
+			}
+			CS = LOW;
+			SCLK = clk;
+			MOSI = 1'b0;
+
+		}
+		state recv_data_resp {
+			reg data_resp_bit_pos[3] = 7;
+
+			if(rising_edge) {
+				if(data_resp_bit_pos == 0) {
+					data_resp_bit_pos := 7;
+					if({data_resp[6:0],miso} != 0xFF) {
+						if({data_resp[2:0],miso} == 4'b0101){
+							operation.write := LOW;
+							goto s1;
+							if(status.interrupt_enable){
+								interrupt_req();
+							}
+							#ifdef CV
+							if(SW[5]){
+								any{
+									data_resp[6]:	debug_led_8();
+									data_resp[5]:	debug_led_7();
+									data_resp[4]:	debug_led_6();
+									data_resp[3]:	debug_led_5();
+									data_resp[2]:	debug_led_4();
+									data_resp[1]:	debug_led_3();
+									data_resp[0]:	debug_led_2();
+									miso:			debug_led_1();
+								}
+							}
+							#endif
+						}else{
+							status.error := HIGH;
+							goto s1;
+						}
+					}
+				} else {
+					data_resp_bit_pos--;
+				}
+				data_resp := {data_resp[6:0], miso};	
+			}
+			CS = LOW;
+			SCLK = clk;
+			MOSI = HIGH;
+		}
+	}
+	func read {
+		wire read_data[32];
+
+		response_lower = response_buf[31:0];
+		response_upper = {0x000000, response_buf[39:32]};
+		any {
+			read_adrs == 12'(0x0): {read_data = read_data_block[4095:4064]; valid();}
+			read_adrs == 12'(0x4): {read_data = read_data_block[4063:4032]; valid();}
+			read_adrs == 12'(0x8): {read_data = read_data_block[4031:4000]; valid();}
+			read_adrs == 12'(0xc): {read_data = read_data_block[3999:3968]; valid();}
+			read_adrs == 12'(0x10): {read_data = read_data_block[3967:3936]; valid();}
+			read_adrs == 12'(0x14): {read_data = read_data_block[3935:3904]; valid();}
+			read_adrs == 12'(0x18): {read_data = read_data_block[3903:3872]; valid();}
+			read_adrs == 12'(0x1c): {read_data = read_data_block[3871:3840]; valid();}
+			read_adrs == 12'(0x20): {read_data = read_data_block[3839:3808]; valid();}
+			read_adrs == 12'(0x24): {read_data = read_data_block[3807:3776]; valid();}
+			read_adrs == 12'(0x28): {read_data = read_data_block[3775:3744]; valid();}
+			read_adrs == 12'(0x2c): {read_data = read_data_block[3743:3712]; valid();}
+			read_adrs == 12'(0x30): {read_data = read_data_block[3711:3680]; valid();}
+			read_adrs == 12'(0x34): {read_data = read_data_block[3679:3648]; valid();}
+			read_adrs == 12'(0x38): {read_data = read_data_block[3647:3616]; valid();}
+			read_adrs == 12'(0x3c): {read_data = read_data_block[3615:3584]; valid();}
+			read_adrs == 12'(0x40): {read_data = read_data_block[3583:3552]; valid();}
+			read_adrs == 12'(0x44): {read_data = read_data_block[3551:3520]; valid();}
+			read_adrs == 12'(0x48): {read_data = read_data_block[3519:3488]; valid();}
+			read_adrs == 12'(0x4c): {read_data = read_data_block[3487:3456]; valid();}
+			read_adrs == 12'(0x50): {read_data = read_data_block[3455:3424]; valid();}
+			read_adrs == 12'(0x54): {read_data = read_data_block[3423:3392]; valid();}
+			read_adrs == 12'(0x58): {read_data = read_data_block[3391:3360]; valid();}
+			read_adrs == 12'(0x5c): {read_data = read_data_block[3359:3328]; valid();}
+			read_adrs == 12'(0x60): {read_data = read_data_block[3327:3296]; valid();}
+			read_adrs == 12'(0x64): {read_data = read_data_block[3295:3264]; valid();}
+			read_adrs == 12'(0x68): {read_data = read_data_block[3263:3232]; valid();}
+			read_adrs == 12'(0x6c): {read_data = read_data_block[3231:3200]; valid();}
+			read_adrs == 12'(0x70): {read_data = read_data_block[3199:3168]; valid();}
+			read_adrs == 12'(0x74): {read_data = read_data_block[3167:3136]; valid();}
+			read_adrs == 12'(0x78): {read_data = read_data_block[3135:3104]; valid();}
+			read_adrs == 12'(0x7c): {read_data = read_data_block[3103:3072]; valid();}
+			read_adrs == 12'(0x80): {read_data = read_data_block[3071:3040]; valid();}
+			read_adrs == 12'(0x84): {read_data = read_data_block[3039:3008]; valid();}
+			read_adrs == 12'(0x88): {read_data = read_data_block[3007:2976]; valid();}
+			read_adrs == 12'(0x8c): {read_data = read_data_block[2975:2944]; valid();}
+			read_adrs == 12'(0x90): {read_data = read_data_block[2943:2912]; valid();}
+			read_adrs == 12'(0x94): {read_data = read_data_block[2911:2880]; valid();}
+			read_adrs == 12'(0x98): {read_data = read_data_block[2879:2848]; valid();}
+			read_adrs == 12'(0x9c): {read_data = read_data_block[2847:2816]; valid();}
+			read_adrs == 12'(0xa0): {read_data = read_data_block[2815:2784]; valid();}
+			read_adrs == 12'(0xa4): {read_data = read_data_block[2783:2752]; valid();}
+			read_adrs == 12'(0xa8): {read_data = read_data_block[2751:2720]; valid();}
+			read_adrs == 12'(0xac): {read_data = read_data_block[2719:2688]; valid();}
+			read_adrs == 12'(0xb0): {read_data = read_data_block[2687:2656]; valid();}
+			read_adrs == 12'(0xb4): {read_data = read_data_block[2655:2624]; valid();}
+			read_adrs == 12'(0xb8): {read_data = read_data_block[2623:2592]; valid();}
+			read_adrs == 12'(0xbc): {read_data = read_data_block[2591:2560]; valid();}
+			read_adrs == 12'(0xc0): {read_data = read_data_block[2559:2528]; valid();}
+			read_adrs == 12'(0xc4): {read_data = read_data_block[2527:2496]; valid();}
+			read_adrs == 12'(0xc8): {read_data = read_data_block[2495:2464]; valid();}
+			read_adrs == 12'(0xcc): {read_data = read_data_block[2463:2432]; valid();}
+			read_adrs == 12'(0xd0): {read_data = read_data_block[2431:2400]; valid();}
+			read_adrs == 12'(0xd4): {read_data = read_data_block[2399:2368]; valid();}
+			read_adrs == 12'(0xd8): {read_data = read_data_block[2367:2336]; valid();}
+			read_adrs == 12'(0xdc): {read_data = read_data_block[2335:2304]; valid();}
+			read_adrs == 12'(0xe0): {read_data = read_data_block[2303:2272]; valid();}
+			read_adrs == 12'(0xe4): {read_data = read_data_block[2271:2240]; valid();}
+			read_adrs == 12'(0xe8): {read_data = read_data_block[2239:2208]; valid();}
+			read_adrs == 12'(0xec): {read_data = read_data_block[2207:2176]; valid();}
+			read_adrs == 12'(0xf0): {read_data = read_data_block[2175:2144]; valid();}
+			read_adrs == 12'(0xf4): {read_data = read_data_block[2143:2112]; valid();}
+			read_adrs == 12'(0xf8): {read_data = read_data_block[2111:2080]; valid();}
+			read_adrs == 12'(0xfc): {read_data = read_data_block[2079:2048]; valid();}
+			read_adrs == 12'(0x100): {read_data = read_data_block[2047:2016]; valid();}
+			read_adrs == 12'(0x104): {read_data = read_data_block[2015:1984]; valid();}
+			read_adrs == 12'(0x108): {read_data = read_data_block[1983:1952]; valid();}
+			read_adrs == 12'(0x10c): {read_data = read_data_block[1951:1920]; valid();}
+			read_adrs == 12'(0x110): {read_data = read_data_block[1919:1888]; valid();}
+			read_adrs == 12'(0x114): {read_data = read_data_block[1887:1856]; valid();}
+			read_adrs == 12'(0x118): {read_data = read_data_block[1855:1824]; valid();}
+			read_adrs == 12'(0x11c): {read_data = read_data_block[1823:1792]; valid();}
+			read_adrs == 12'(0x120): {read_data = read_data_block[1791:1760]; valid();}
+			read_adrs == 12'(0x124): {read_data = read_data_block[1759:1728]; valid();}
+			read_adrs == 12'(0x128): {read_data = read_data_block[1727:1696]; valid();}
+			read_adrs == 12'(0x12c): {read_data = read_data_block[1695:1664]; valid();}
+			read_adrs == 12'(0x130): {read_data = read_data_block[1663:1632]; valid();}
+			read_adrs == 12'(0x134): {read_data = read_data_block[1631:1600]; valid();}
+			read_adrs == 12'(0x138): {read_data = read_data_block[1599:1568]; valid();}
+			read_adrs == 12'(0x13c): {read_data = read_data_block[1567:1536]; valid();}
+			read_adrs == 12'(0x140): {read_data = read_data_block[1535:1504]; valid();}
+			read_adrs == 12'(0x144): {read_data = read_data_block[1503:1472]; valid();}
+			read_adrs == 12'(0x148): {read_data = read_data_block[1471:1440]; valid();}
+			read_adrs == 12'(0x14c): {read_data = read_data_block[1439:1408]; valid();}
+			read_adrs == 12'(0x150): {read_data = read_data_block[1407:1376]; valid();}
+			read_adrs == 12'(0x154): {read_data = read_data_block[1375:1344]; valid();}
+			read_adrs == 12'(0x158): {read_data = read_data_block[1343:1312]; valid();}
+			read_adrs == 12'(0x15c): {read_data = read_data_block[1311:1280]; valid();}
+			read_adrs == 12'(0x160): {read_data = read_data_block[1279:1248]; valid();}
+			read_adrs == 12'(0x164): {read_data = read_data_block[1247:1216]; valid();}
+			read_adrs == 12'(0x168): {read_data = read_data_block[1215:1184]; valid();}
+			read_adrs == 12'(0x16c): {read_data = read_data_block[1183:1152]; valid();}
+			read_adrs == 12'(0x170): {read_data = read_data_block[1151:1120]; valid();}
+			read_adrs == 12'(0x174): {read_data = read_data_block[1119:1088]; valid();}
+			read_adrs == 12'(0x178): {read_data = read_data_block[1087:1056]; valid();}
+			read_adrs == 12'(0x17c): {read_data = read_data_block[1055:1024]; valid();}
+			read_adrs == 12'(0x180): {read_data = read_data_block[1023:992]; valid();}
+			read_adrs == 12'(0x184): {read_data = read_data_block[991:960]; valid();}
+			read_adrs == 12'(0x188): {read_data = read_data_block[959:928]; valid();}
+			read_adrs == 12'(0x18c): {read_data = read_data_block[927:896]; valid();}
+			read_adrs == 12'(0x190): {read_data = read_data_block[895:864]; valid();}
+			read_adrs == 12'(0x194): {read_data = read_data_block[863:832]; valid();}
+			read_adrs == 12'(0x198): {read_data = read_data_block[831:800]; valid();}
+			read_adrs == 12'(0x19c): {read_data = read_data_block[799:768]; valid();}
+			read_adrs == 12'(0x1a0): {read_data = read_data_block[767:736]; valid();}
+			read_adrs == 12'(0x1a4): {read_data = read_data_block[735:704]; valid();}
+			read_adrs == 12'(0x1a8): {read_data = read_data_block[703:672]; valid();}
+			read_adrs == 12'(0x1ac): {read_data = read_data_block[671:640]; valid();}
+			read_adrs == 12'(0x1b0): {read_data = read_data_block[639:608]; valid();}
+			read_adrs == 12'(0x1b4): {read_data = read_data_block[607:576]; valid();}
+			read_adrs == 12'(0x1b8): {read_data = read_data_block[575:544]; valid();}
+			read_adrs == 12'(0x1bc): {read_data = read_data_block[543:512]; valid();}
+			read_adrs == 12'(0x1c0): {read_data = read_data_block[511:480]; valid();}
+			read_adrs == 12'(0x1c4): {read_data = read_data_block[479:448]; valid();}
+			read_adrs == 12'(0x1c8): {read_data = read_data_block[447:416]; valid();}
+			read_adrs == 12'(0x1cc): {read_data = read_data_block[415:384]; valid();}
+			read_adrs == 12'(0x1d0): {read_data = read_data_block[383:352]; valid();}
+			read_adrs == 12'(0x1d4): {read_data = read_data_block[351:320]; valid();}
+			read_adrs == 12'(0x1d8): {read_data = read_data_block[319:288]; valid();}
+			read_adrs == 12'(0x1dc): {read_data = read_data_block[287:256]; valid();}
+			read_adrs == 12'(0x1e0): {read_data = read_data_block[255:224]; valid();}
+			read_adrs == 12'(0x1e4): {read_data = read_data_block[223:192]; valid();}
+			read_adrs == 12'(0x1e8): {read_data = read_data_block[191:160]; valid();}
+			read_adrs == 12'(0x1ec): {read_data = read_data_block[159:128]; valid();}
+			read_adrs == 12'(0x1f0): {read_data = read_data_block[127:96]; valid();}
+			read_adrs == 12'(0x1f4): {read_data = read_data_block[95:64]; valid();}
+			read_adrs == 12'(0x1f8): {read_data = read_data_block[63:32]; valid();}
+			read_adrs == 12'(0x1fc): {read_data = read_data_block[31:0]; valid(); #ifdef CV debug_sseg_l12(read_data[11:0]); #endif}
+			read_adrs == 12'(0x200): {read_data = 32'(status); valid();}
+			read_adrs == 12'(0x204): {read_data = response_lower; valid();}
+			read_adrs == 12'(0x208): {read_data = response_upper; valid();}
+			read_adrs == 12'(0x20c): {read_data = status; valid();}
+			read_adrs == 12'(0x210): {read_data = operation; valid();}
+			read_adrs == 12'(0x214): {read_data = operation_adrs; valid();}
+			else: load_access_fault();
+		}
+		any {
+			(byteen == MEM_WORD):							rdata = read_data;
+			(byteen == MEM_HALFWORD && ~read_adrs[1]):			rdata = {0x0000, read_data[15:0]};
+			(byteen == MEM_HALFWORD && read_adrs[1]):			rdata = {0x0000, read_data[31:16]};
+			(byteen == MEM_BYTE && (read_adrs[1:0] == 2'b00)):	rdata = {0x000000, read_data[7:0]};
+			(byteen == MEM_BYTE && (read_adrs[1:0] == 2'b01)):	rdata = {0x000000, read_data[15:8]};
+			(byteen == MEM_BYTE && (read_adrs[1:0] == 2'b10)):	rdata = {0x000000, read_data[23:16]};
+			(byteen == MEM_BYTE && (read_adrs[1:0] == 2'b11)):	rdata = {0x000000, read_data[31:24]};
+		}
+	}
+	func write {
+		variable new_data[32];
+		wire old_data[32];
+
+		any {
+			write_adrs == 12'(0x0): {write_data_block[127] := wdata; valid();}
+			write_adrs == 12'(0x4): {write_data_block[126] := wdata; valid();}
+			write_adrs == 12'(0x8): {write_data_block[125] := wdata; valid();}
+			write_adrs == 12'(0xc): {write_data_block[124] := wdata; valid();}
+			write_adrs == 12'(0x10): {write_data_block[123] := wdata; valid();}
+			write_adrs == 12'(0x14): {write_data_block[122] := wdata; valid();}
+			write_adrs == 12'(0x18): {write_data_block[121] := wdata; valid();}
+			write_adrs == 12'(0x1c): {write_data_block[120] := wdata; valid();}
+			write_adrs == 12'(0x20): {write_data_block[119] := wdata; valid();}
+			write_adrs == 12'(0x24): {write_data_block[118] := wdata; valid();}
+			write_adrs == 12'(0x28): {write_data_block[117] := wdata; valid();}
+			write_adrs == 12'(0x2c): {write_data_block[116] := wdata; valid();}
+			write_adrs == 12'(0x30): {write_data_block[115] := wdata; valid();}
+			write_adrs == 12'(0x34): {write_data_block[114] := wdata; valid();}
+			write_adrs == 12'(0x38): {write_data_block[113] := wdata; valid();}
+			write_adrs == 12'(0x3c): {write_data_block[112] := wdata; valid();}
+			write_adrs == 12'(0x40): {write_data_block[111] := wdata; valid();}
+			write_adrs == 12'(0x44): {write_data_block[110] := wdata; valid();}
+			write_adrs == 12'(0x48): {write_data_block[109] := wdata; valid();}
+			write_adrs == 12'(0x4c): {write_data_block[108] := wdata; valid();}
+			write_adrs == 12'(0x50): {write_data_block[107] := wdata; valid();}
+			write_adrs == 12'(0x54): {write_data_block[106] := wdata; valid();}
+			write_adrs == 12'(0x58): {write_data_block[105] := wdata; valid();}
+			write_adrs == 12'(0x5c): {write_data_block[104] := wdata; valid();}
+			write_adrs == 12'(0x60): {write_data_block[103] := wdata; valid();}
+			write_adrs == 12'(0x64): {write_data_block[102] := wdata; valid();}
+			write_adrs == 12'(0x68): {write_data_block[101] := wdata; valid();}
+			write_adrs == 12'(0x6c): {write_data_block[100] := wdata; valid();}
+			write_adrs == 12'(0x70): {write_data_block[99] := wdata; valid();}
+			write_adrs == 12'(0x74): {write_data_block[98] := wdata; valid();}
+			write_adrs == 12'(0x78): {write_data_block[97] := wdata; valid();}
+			write_adrs == 12'(0x7c): {write_data_block[96] := wdata; valid();}
+			write_adrs == 12'(0x80): {write_data_block[95] := wdata; valid();}
+			write_adrs == 12'(0x84): {write_data_block[94] := wdata; valid();}
+			write_adrs == 12'(0x88): {write_data_block[93] := wdata; valid();}
+			write_adrs == 12'(0x8c): {write_data_block[92] := wdata; valid();}
+			write_adrs == 12'(0x90): {write_data_block[91] := wdata; valid();}
+			write_adrs == 12'(0x94): {write_data_block[90] := wdata; valid();}
+			write_adrs == 12'(0x98): {write_data_block[89] := wdata; valid();}
+			write_adrs == 12'(0x9c): {write_data_block[88] := wdata; valid();}
+			write_adrs == 12'(0xa0): {write_data_block[87] := wdata; valid();}
+			write_adrs == 12'(0xa4): {write_data_block[86] := wdata; valid();}
+			write_adrs == 12'(0xa8): {write_data_block[85] := wdata; valid();}
+			write_adrs == 12'(0xac): {write_data_block[84] := wdata; valid();}
+			write_adrs == 12'(0xb0): {write_data_block[83] := wdata; valid();}
+			write_adrs == 12'(0xb4): {write_data_block[82] := wdata; valid();}
+			write_adrs == 12'(0xb8): {write_data_block[81] := wdata; valid();}
+			write_adrs == 12'(0xbc): {write_data_block[80] := wdata; valid();}
+			write_adrs == 12'(0xc0): {write_data_block[79] := wdata; valid();}
+			write_adrs == 12'(0xc4): {write_data_block[78] := wdata; valid();}
+			write_adrs == 12'(0xc8): {write_data_block[77] := wdata; valid();}
+			write_adrs == 12'(0xcc): {write_data_block[76] := wdata; valid();}
+			write_adrs == 12'(0xd0): {write_data_block[75] := wdata; valid();}
+			write_adrs == 12'(0xd4): {write_data_block[74] := wdata; valid();}
+			write_adrs == 12'(0xd8): {write_data_block[73] := wdata; valid();}
+			write_adrs == 12'(0xdc): {write_data_block[72] := wdata; valid();}
+			write_adrs == 12'(0xe0): {write_data_block[71] := wdata; valid();}
+			write_adrs == 12'(0xe4): {write_data_block[70] := wdata; valid();}
+			write_adrs == 12'(0xe8): {write_data_block[69] := wdata; valid();}
+			write_adrs == 12'(0xec): {write_data_block[68] := wdata; valid();}
+			write_adrs == 12'(0xf0): {write_data_block[67] := wdata; valid();}
+			write_adrs == 12'(0xf4): {write_data_block[66] := wdata; valid();}
+			write_adrs == 12'(0xf8): {write_data_block[65] := wdata; valid();}
+			write_adrs == 12'(0xfc): {write_data_block[64] := wdata; valid();}
+			write_adrs == 12'(0x100): {write_data_block[63] := wdata; valid();}
+			write_adrs == 12'(0x104): {write_data_block[62] := wdata; valid();}
+			write_adrs == 12'(0x108): {write_data_block[61] := wdata; valid();}
+			write_adrs == 12'(0x10c): {write_data_block[60] := wdata; valid();}
+			write_adrs == 12'(0x110): {write_data_block[59] := wdata; valid();}
+			write_adrs == 12'(0x114): {write_data_block[58] := wdata; valid();}
+			write_adrs == 12'(0x118): {write_data_block[57] := wdata; valid();}
+			write_adrs == 12'(0x11c): {write_data_block[56] := wdata; valid();}
+			write_adrs == 12'(0x120): {write_data_block[55] := wdata; valid();}
+			write_adrs == 12'(0x124): {write_data_block[54] := wdata; valid();}
+			write_adrs == 12'(0x128): {write_data_block[53] := wdata; valid();}
+			write_adrs == 12'(0x12c): {write_data_block[52] := wdata; valid();}
+			write_adrs == 12'(0x130): {write_data_block[51] := wdata; valid();}
+			write_adrs == 12'(0x134): {write_data_block[50] := wdata; valid();}
+			write_adrs == 12'(0x138): {write_data_block[49] := wdata; valid();}
+			write_adrs == 12'(0x13c): {write_data_block[48] := wdata; valid();}
+			write_adrs == 12'(0x140): {write_data_block[47] := wdata; valid();}
+			write_adrs == 12'(0x144): {write_data_block[46] := wdata; valid();}
+			write_adrs == 12'(0x148): {write_data_block[45] := wdata; valid();}
+			write_adrs == 12'(0x14c): {write_data_block[44] := wdata; valid();}
+			write_adrs == 12'(0x150): {write_data_block[43] := wdata; valid();}
+			write_adrs == 12'(0x154): {write_data_block[42] := wdata; valid();}
+			write_adrs == 12'(0x158): {write_data_block[41] := wdata; valid();}
+			write_adrs == 12'(0x15c): {write_data_block[40] := wdata; valid();}
+			write_adrs == 12'(0x160): {write_data_block[39] := wdata; valid();}
+			write_adrs == 12'(0x164): {write_data_block[38] := wdata; valid();}
+			write_adrs == 12'(0x168): {write_data_block[37] := wdata; valid();}
+			write_adrs == 12'(0x16c): {write_data_block[36] := wdata; valid();}
+			write_adrs == 12'(0x170): {write_data_block[35] := wdata; valid();}
+			write_adrs == 12'(0x174): {write_data_block[34] := wdata; valid();}
+			write_adrs == 12'(0x178): {write_data_block[33] := wdata; valid();}
+			write_adrs == 12'(0x17c): {write_data_block[32] := wdata; valid();}
+			write_adrs == 12'(0x180): {write_data_block[31] := wdata; valid();}
+			write_adrs == 12'(0x184): {write_data_block[30] := wdata; valid();}
+			write_adrs == 12'(0x188): {write_data_block[29] := wdata; valid();}
+			write_adrs == 12'(0x18c): {write_data_block[28] := wdata; valid();}
+			write_adrs == 12'(0x190): {write_data_block[27] := wdata; valid();}
+			write_adrs == 12'(0x194): {write_data_block[26] := wdata; valid();}
+			write_adrs == 12'(0x198): {write_data_block[25] := wdata; valid();}
+			write_adrs == 12'(0x19c): {write_data_block[24] := wdata; valid();}
+			write_adrs == 12'(0x1a0): {write_data_block[23] := wdata; valid();}
+			write_adrs == 12'(0x1a4): {write_data_block[22] := wdata; valid();}
+			write_adrs == 12'(0x1a8): {write_data_block[21] := wdata; valid();}
+			write_adrs == 12'(0x1ac): {write_data_block[20] := wdata; valid();}
+			write_adrs == 12'(0x1b0): {write_data_block[19] := wdata; valid();}
+			write_adrs == 12'(0x1b4): {write_data_block[18] := wdata; valid();}
+			write_adrs == 12'(0x1b8): {write_data_block[17] := wdata; valid();}
+			write_adrs == 12'(0x1bc): {write_data_block[16] := wdata; valid();}
+			write_adrs == 12'(0x1c0): {write_data_block[15] := wdata; valid();}
+			write_adrs == 12'(0x1c4): {write_data_block[14] := wdata; valid();}
+			write_adrs == 12'(0x1c8): {write_data_block[13] := wdata; valid();}
+			write_adrs == 12'(0x1cc): {write_data_block[12] := wdata; valid();}
+			write_adrs == 12'(0x1d0): {write_data_block[11] := wdata; valid();}
+			write_adrs == 12'(0x1d4): {write_data_block[10] := wdata; valid();}
+			write_adrs == 12'(0x1d8): {write_data_block[9] := wdata; valid();}
+			write_adrs == 12'(0x1dc): {write_data_block[8] := wdata; valid();}
+			write_adrs == 12'(0x1e0): {write_data_block[7] := wdata; valid();}
+			write_adrs == 12'(0x1e4): {write_data_block[6] := wdata; valid();}
+			write_adrs == 12'(0x1e8): {write_data_block[5] := wdata; valid();}
+			write_adrs == 12'(0x1ec): {write_data_block[4] := wdata; valid();}
+			write_adrs == 12'(0x1f0): {write_data_block[3] := wdata; valid();}
+			write_adrs == 12'(0x1f4): {write_data_block[2] := wdata; valid();}
+			write_adrs == 12'(0x1f8): {write_data_block[1] := wdata; valid();}
+			write_adrs == 12'(0x1fc): {write_data_block[0] := wdata; valid(); #ifdef CV debug_sseg_h12(wdata[11:0]); #endif}
+			write_adrs == 12'(0x200): {old_data = status; status.interrupt_enable := wdata[3]; status.error := wdata[2]; valid();}
+			write_adrs == 12'(0x210): {old_data = operation; operation := wdata; valid();}
+			//write_adrs == 12'(0x214): {old_data = operation_adrs; operation_adrs := new_data; valid();}
+			write_adrs == 12'(0x214): {old_data = operation_adrs; operation_adrs := wdata; valid();}
+			else: store_amo_access_fault();
+		}
+		/*
+		any {
+			(byteen == MEM_WORD):							{new_data[31:0] = wdata;}
+			(byteen == MEM_HALFWORD && ~write_adrs[1]):			{new_data[31:16] = old_data[31:16]; new_data[15:0] = wdata[15:0];}
+			(byteen == MEM_HALFWORD && write_adrs[1]):			{new_data[31:16] = wdata[15:0]; new_data[15:0] = old_data[15:0];}
+			(byteen == MEM_BYTE && (write_adrs[1:0] == 2'b00)):	{new_data[31:8] = old_data[31:8]; new_data[7:0] = wdata[7:0];}
+			(byteen == MEM_BYTE && (write_adrs[1:0] == 2'b01)):	{new_data[31:16] = old_data[31:16]; new_data[15:8] = wdata[7:0]; new_data[7:0] = old_data[7:0];}
+			(byteen == MEM_BYTE && (write_adrs[1:0] == 2'b10)):	{new_data[31:24] = old_data[31:24]; new_data[23:16] = wdata[7:0]; new_data[15:0] = old_data[15:0];}
+			(byteen == MEM_BYTE && (write_adrs[1:0] == 2'b11)):	{new_data[31:24] = wdata[7:0]; new_data[23:0] = old_data[23:0];}
+		}
+		*/
+	}
+}
