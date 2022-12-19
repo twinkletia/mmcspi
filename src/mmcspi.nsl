@@ -9,6 +9,17 @@
 #define DUMMY_CLOCK_COUNT 80
 #define SIZE_1_BYTE		8
 #define SIZE_5_BYTE		40
+#define CSB 0 //cmd_start_bit
+#define CTB 1 //cmd_transmission_bit
+#define CRC 0x00
+#define CMD17_18_24_TOKEN 8'b11111110
+#define CMD25_TOKEN 8'b11111100
+#define CMD25_STOP 8'b11111101
+#define ACCEPTED 4'b0101
+#define RES_R1B 2'b00
+#define RES_R1 2'b01
+#define RES_R2 2'b10
+#define RES_R3 2'b11
 
 module mmcspi {
 	reg clk_cnt[8] = 0;
@@ -26,11 +37,12 @@ module mmcspi {
 	proc_name init();
 	proc_name idle();
 	reg cmd_buf[48];
-	reg response_size[6];
+	reg response[2];
 	reg response_buf[40];
-			reg data_resp[8] = -1;
-	proc_name send_cmd(cmd_buf, response_size);
-	proc_name receive_response(response_buf, response_size);
+    reg error[8];
+    reg data_resp[8] = -1;
+	proc_name send_cmd(cmd_buf, response);
+	proc_name receive_response(response_buf, response);
 	reg read_data_block[4096] = -1;
 	mem write_data_block[128][32];//reg write_data_block[4096] = -1;
 
@@ -99,7 +111,7 @@ module mmcspi {
 				if(dummy_clock_cnt == DUMMY_CLOCK_COUNT) {
 					dummy_clock_cnt := 0;
 
-					send_cmd(CMD0, SIZE_1_BYTE);
+					send_cmd(CMD0, RES_R1);
 					goto recv_cmd0_resp;
 				} else {
 					dummy_clock_cnt++;
@@ -112,12 +124,12 @@ module mmcspi {
 		state recv_cmd0_resp {
 			if(rising_edge) {
 				if(response_buf[7:0] == 0x01){
-					send_cmd(CMD1, SIZE_1_BYTE);
+					send_cmd(CMD1, RES_R1);
 					goto recv_cmd1_resp;
 					#ifdef CV
 					#endif
 				}else{
-					send_cmd(CMD0, SIZE_1_BYTE);
+					send_cmd(CMD0, RES_R1);
 				}
 			}
 			CS = HIGH;
@@ -127,12 +139,12 @@ module mmcspi {
 		state recv_cmd1_resp{
 			if(rising_edge) {
 				if(response_buf[7:0] == 0x00) {
-					send_cmd(CMD16, SIZE_1_BYTE);
+					send_cmd(CMD16, RES_R1);
 					goto recv_cmd16_resp;
 					#ifdef CV
 					#endif
 				}else{
-					send_cmd(CMD1, SIZE_1_BYTE);
+					send_cmd(CMD1, RES_R1);
 					#ifdef CV
 					#endif
 				}
@@ -160,32 +172,32 @@ module mmcspi {
 		if(rising_edge) {
 			if((cmd_buf_bit_pos-1) == 0) {
 				cmd_buf_bit_pos := 48;
-				receive_response(0xffffffffff, response_size);
+				receive_response(0xffffffffff, response);
 					#ifdef CV
 					#endif
 			} else {
 				cmd_buf_bit_pos--;
 			}
 		}
-		/*
-		if(falling_edge) {
-			if((cmd_buf_bit_pos-1) != 0) {
-			}
-		}
-		*/
 		CS = LOW;
 		SCLK = clk;
 		MOSI = cmd_buf[cmd_buf_bit_pos-1];
 	}
 	proc receive_response {
 		reg response_buf_bit_pos[6] = 0;
-		state_name receive_start_bit, receive_response_body;
+		state_name receive_start_bit, receive_response_body, r1b_busy_wait;
+        reg response_size[6] = 0;
 		
 		state receive_start_bit {
 			if(miso == LOW) {
 				if(rising_edge) {
 					response_buf := {response_buf[38:0], miso};
 					response_buf_bit_pos++;
+                    any{
+                        response[1] == 0: response_size := 8; //RES_R1 or RES_R1B
+                        response == RES_R2: response_size := 16;
+                        response == RES_R3: response_size := 40;
+                    }
 					goto receive_response_body;
 					#ifdef CV
 					#endif
@@ -196,12 +208,20 @@ module mmcspi {
 			if(rising_edge) {
 				if(response_buf_bit_pos == (response_size-1)) {
 					response_buf_bit_pos := 0;
-					if(!status.inited) {
+                    any{
+                        response[1] == 0: error := {response_buf[6:0],miso}; //RES_R1 or RES_R1B
+                        response == RES_R2: error := {response_buf[14:8],miso};
+                        response == RES_R3: error := {response_buf[38:32],miso};
+                    }
+                    if(response == RES_R1B){
+                        goto r1b_busy_wait;
+                    }else if(!status.inited) {
 						init();
+					    goto receive_start_bit;
 					} else {
 						idle();
+					    goto receive_start_bit;
 					}
-					goto receive_start_bit;
 					#ifdef CV
 					#endif
 				} else {
@@ -210,6 +230,16 @@ module mmcspi {
 				response_buf := {response_buf[38:0], miso};
 			}
 		}
+        state r1b_busy_wait {
+            reg r1b_busy[8] = 0;
+			if(rising_edge) {
+                if({r1b_busy[6:0],miso} == 0xFF) {
+                    idle();
+                    goto receive_start_bit;
+                }
+				r1b_busy := {r1b_busy[6:0], miso};	
+			}
+        }
 		CS = LOW;
 		SCLK = clk;
 		MOSI = HIGH;
@@ -220,6 +250,7 @@ module mmcspi {
 		state_name recv_cmd24_resp, send_data_packet_start_byte, send_data_packet_data_block, send_data_packet_crc, recv_data_resp;
 		reg start_byte_buf[8] = 0;
 		reg start_byte[8] = 0xfe;
+		reg recieve_size[13] = 4096;
 		reg crc[16] = 0;
 
 		status.inited := HIGH;
@@ -238,58 +269,46 @@ module mmcspi {
 			CS = HIGH;
 			SCLK = LOW;
 			MOSI = HIGH;
-
 		}
+
 		state s1 {
-				#ifdef CV
-			if(status.error == HIGH) {
-				status.idle := LOW;
-			} else#endif if(operation.read) {
-				if(rising_edge) {
-					send_cmd((CMD17|{0x00, operation_adrs, 0x00}), SIZE_1_BYTE);
-					goto recv_cmd17_resp;
-					#ifdef CV
-					#endif
-				}
-				status.idle := LOW;
-			} else if(operation.write) {
-				if(rising_edge) {
-					send_cmd((CMD24|{0x00, operation_adrs, 0x00}), SIZE_1_BYTE);
-					goto recv_cmd24_resp;
-					#ifdef CV
-					if(SW[5]){
-						debug_led_1();
-					}
-					#endif
-				}
-				status.idle := LOW;
-			} else {
-				status.idle := HIGH;
-			}
+            wire res[2];
+            if(status.exec == HIGH){
+                any {
+                    cmd == 27 || cmd == 28 || cmd == 29 || cmd == 38 || cmd == 42: res = RES_R1B;
+                    cmd == 13: res = RES_R2;
+                    cmd == 58: res = RES_R3;
+                    else: res = RES_R1;
+                }
+                send_cmd({CSB,CTB,cmd,arg,CRC},res);
+                goto s2;
+            }
+		    status.idle := !status.exec;
 			CS = HIGH;
 			SCLK = clk;
 			MOSI = HIGH;
-			#ifdef CV
-			#endif
-
 		}
-		state recv_cmd17_resp {
-			if(rising_edge) {
-				if(response_buf[7:0] == 0x00) {
-					start_byte_buf := {start_byte_buf[6:0], miso};
-					goto recv_data_packet_start_byte;
-					#ifdef CV
-					#endif
-				} else {
-					status.error := HIGH;
-					goto s1;
+        state s2{
+            if(error == 0x00){
+                any {
+                    cmd == 9 | cmd == 10 | cmd == 17 | cmd == 18: goto recv_data_packet_start_byte;
+                    cmd == 24 | cmd == 25: goto send_data_packet_start_byte;
+					else: goto send_irq;
+                }
+				any{
+                    cmd == 9 | cmd == 10 | cmd == 17 | cmd == 18 | cmd == 24: start_byte := 0xfe
+                    cmd == 25: start_byte := 0xfc;
+					cmd == 9 | cmd == 10: recieve_size := 128;
+					cmd == 17 | cmd == 18: recieve_size := 4096;
 				}
-			}
+            }else{
+                goto send_irq;
+            }
+			start_byte_buf := {start_byte_buf[6:0], miso};
 			CS = HIGH;
 			SCLK = clk;
 			MOSI = HIGH;
-
-		}
+        }
 		state recv_data_packet_start_byte {
 			if(rising_edge) {
 				if({start_byte_buf[6:0], miso} == start_byte) {
@@ -310,8 +329,7 @@ module mmcspi {
 			reg data_block_bit_pos[13] = 0;
 
 			if(rising_edge) {
-				if(data_block_bit_pos == (4096-1)) {
-					//valid({data_block[4094:0], miso});
+				if(data_block_bit_pos == (recieve_size-1)) {
 					data_block_bit_pos := 0;
 					goto recv_data_packet_crc;
 					#ifdef CV
@@ -332,7 +350,11 @@ module mmcspi {
 			if(rising_edge) {
 				if(crc_bit_pos == (16-1)) {
 					crc_bit_pos := 0;
-					goto dummy;
+					if(cmd == 18){
+						goto recv_data_packet_start_byte;
+					}else{
+						goto send_irq;
+					}
 					#ifdef CV
 					#endif
 				} else {
@@ -341,39 +363,6 @@ module mmcspi {
 				crc := {crc[14:0], miso};
 			}
 			CS = LOW;
-			SCLK = clk;
-			MOSI = HIGH;
-
-		}
-		state dummy {
-			if(rising_edge) {
-				goto s1;
-					#ifdef CV
-					#endif
-			}
-			operation.read := LOW;
-			if(status.interrupt_enable){
-				interrupt_req();
-			}
-			CS = LOW;
-			SCLK = clk;
-			MOSI = HIGH;
-		}
-		state recv_cmd24_resp {
-			if(rising_edge) {
-				if(response_buf[7:0] == 0x00) {
-					goto send_data_packet_start_byte;
-					#ifdef CV
-					if(SW[5]){
-						debug_led_2();
-					}
-					#endif
-				} else {
-					status.error := HIGH;
-					goto s1;
-				}
-			}
-			CS = HIGH;
 			SCLK = clk;
 			MOSI = HIGH;
 
@@ -427,40 +416,7 @@ module mmcspi {
 			sending_word = write_data_block[write_data_column];
 			CS = LOW;
 			SCLK = clk;
-			any {
-				write_data_row == 31:{MOSI=sending_word[31];}
-				write_data_row == 30:{MOSI=sending_word[30];}
-				write_data_row == 29:{MOSI=sending_word[29];}
-				write_data_row == 28:{MOSI=sending_word[28];}
-				write_data_row == 27:{MOSI=sending_word[27];}
-				write_data_row == 26:{MOSI=sending_word[26];}
-				write_data_row == 25:{MOSI=sending_word[25];}
-				write_data_row == 24:{MOSI=sending_word[24];}
-				write_data_row == 23:{MOSI=sending_word[23];}
-				write_data_row == 22:{MOSI=sending_word[22];}
-				write_data_row == 21:{MOSI=sending_word[21];}
-				write_data_row == 20:{MOSI=sending_word[20];}
-				write_data_row == 19:{MOSI=sending_word[19];}
-				write_data_row == 18:{MOSI=sending_word[18];}
-				write_data_row == 17:{MOSI=sending_word[17];}
-				write_data_row == 16:{MOSI=sending_word[16];}
-				write_data_row == 15:{MOSI=sending_word[15];}
-				write_data_row == 14:{MOSI=sending_word[14];}
-				write_data_row == 13:{MOSI=sending_word[13];}
-				write_data_row == 12:{MOSI=sending_word[12];}
-				write_data_row == 11:{MOSI=sending_word[11];}
-				write_data_row == 10:{MOSI=sending_word[10];}
-				write_data_row == 9:{MOSI=sending_word[9];}
-				write_data_row == 8:{MOSI=sending_word[8];}
-				write_data_row == 7:{MOSI=sending_word[7];}
-				write_data_row == 6:{MOSI=sending_word[6];}
-				write_data_row == 5:{MOSI=sending_word[5];}
-				write_data_row == 4:{MOSI=sending_word[4];}
-				write_data_row == 3:{MOSI=sending_word[3];}
-				write_data_row == 2:{MOSI=sending_word[2];}
-				write_data_row == 1:{MOSI=sending_word[1];}
-				write_data_row == 0:{MOSI=sending_word[0];}
-			}
+            MOSI = sending_word[write_data_row];
 			//MOSI = write_data_block[write_data_block_bit_pos];
 
 		}
@@ -492,26 +448,12 @@ module mmcspi {
 				if(data_resp_bit_pos == 0) {
 					data_resp_bit_pos := 7;
 					if({data_resp[6:0],miso} != 0xFF) {
-						if({data_resp[2:0],miso} == 4'b0101){
-							operation.write := LOW;
-							goto s1;
-							if(status.interrupt_enable){
-								interrupt_req();
-							}
-							#ifdef CV
-							if(SW[5]){
-								any{
-									data_resp[6]:	debug_led_8();
-									data_resp[5]:	debug_led_7();
-									data_resp[4]:	debug_led_6();
-									data_resp[3]:	debug_led_5();
-									data_resp[2]:	debug_led_4();
-									data_resp[1]:	debug_led_3();
-									data_resp[0]:	debug_led_2();
-									miso:			debug_led_1();
-								}
-							}
-							#endif
+						if({data_resp[2:0],miso} == ACCEPTED){
+                            if(cmd == 25){
+                                goto send_data_packet_start_byte;
+                            }else{
+							    goto send_irq;
+                            }
 						}else{
 							status.error := HIGH;
 							goto s1;
@@ -526,6 +468,17 @@ module mmcspi {
 			SCLK = clk;
 			MOSI = HIGH;
 		}
+        state send_irq{
+			if(rising_edge){
+				if(status.interrupt_enable){
+					interrupt_req();
+				}
+            	goto s1;
+			}
+			CS = LOW;
+			SCLK = clk;
+			MOSI = HIGH;
+        }
 	}
 	func read {
 		wire read_data[32];
@@ -662,11 +615,10 @@ module mmcspi {
 			read_adrs == 12'(0x1f8): {read_data = read_data_block[63:32]; valid();}
 			read_adrs == 12'(0x1fc): {read_data = read_data_block[31:0]; valid(); #ifdef CV debug_sseg_l12(read_data[11:0]); #endif}
 			read_adrs == 12'(0x200): {read_data = 32'(status); valid();}
-			read_adrs == 12'(0x204): {read_data = response_lower; valid();}
-			read_adrs == 12'(0x208): {read_data = response_upper; valid();}
-			read_adrs == 12'(0x20c): {read_data = status; valid();}
-			read_adrs == 12'(0x210): {read_data = operation; valid();}
-			read_adrs == 12'(0x214): {read_data = operation_adrs; valid();}
+			read_adrs == 12'(0x204): {read_data = response_lower; valid();}	//reg response[32];
+			read_adrs == 12'(0x208): {read_data = response_upper; valid();}	//reg ocr[32]
+			read_adrs == 12'(0x20c): {read_data = cmd; valid();}	//reg cmd[32]
+			read_adrs == 12'(0x210): {read_data = arg; valid();}	//reg arg[32]
 			else: load_access_fault();
 		}
 		any {
@@ -812,10 +764,9 @@ module mmcspi {
 			write_adrs == 12'(0x1f4): {write_data_block[2] := wdata; valid();}
 			write_adrs == 12'(0x1f8): {write_data_block[1] := wdata; valid();}
 			write_adrs == 12'(0x1fc): {write_data_block[0] := wdata; valid(); #ifdef CV debug_sseg_h12(wdata[11:0]); #endif}
-			write_adrs == 12'(0x200): {old_data = status; status.interrupt_enable := wdata[3]; status.error := wdata[2]; valid();}
-			write_adrs == 12'(0x210): {old_data = operation; operation := wdata; valid();}
-			//write_adrs == 12'(0x214): {old_data = operation_adrs; operation_adrs := new_data; valid();}
-			write_adrs == 12'(0x214): {old_data = operation_adrs; operation_adrs := wdata; valid();}
+			write_adrs == 12'(0x200): {old_data = status; status.interrupt_enable := wdata[3]; status.exec := wdata[2]; valid();}
+			write_adrs == 12'(0x20c): {cmd := wdata; valid();}	//reg cmd[32]
+			write_adrs == 12'(0x210): {arg := wdata; valid();}	//reg arg[32]
 			else: store_amo_access_fault();
 		}
 		/*
