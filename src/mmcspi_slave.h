@@ -17,5 +17,10 @@ declare mmcspi_slave
     func_out read(adrs);
     output write_block_data[4096];
     func_out write(adrs, write_block_data);
+    output head[32];
+    output tail[32];
+    output excnt[4];
+    output exclusion[512];
+    func_out erase(head, tail, excnt, exclusion);
 }
 #endif

@@ -7,8 +7,12 @@
 #define CMD17	0x51_00_00_00_00_01
 #define CMD24	0x58_00_00_00_00_01
 
+#define CMD17_18_24_TOKEN 8'b11111110
+#define CMD25_TOKEN 8'b11111100
+#define CMD25_STOP 8'b11111101
+
 module mmcspi_slave {
-	state_name s0, s1, s2, s3, s4, s5, s6, s7, s8;
+	state_name s0, s1, s2, s3, s4, s5, s6, s7, s8, busy;
 	reg cmd_buf[48] = -1;
 	reg cmd_buf_bit_pos[6] = 0;
 	func_self rising_edge;
@@ -24,6 +28,16 @@ module mmcspi_slave {
 	reg block_data[4096] = 0;
 	reg start_byte[8] = 0xfe;
 	reg start_byte_buf[8] = 0;
+	reg csd[128] = 0xb5000150_01ffffff_8dc15ada_4c007a00;//005e0032_5b5a83b1_ffffff80_0a8000ad;
+	reg cid[128] = 0xa91a8000_ace35b0c_42e24c22_ca120ae4;//27504853_44324742_30dac735_00015895;
+	reg ocr[32] = 0x80ff8000;
+	reg r1resp[8] = 0x00;
+	reg r2resp[8] = 0xAB;
+	reg busy_flag = 0;
+	reg erase_head[32] = 0;
+	reg erase_tail[32] = 0;
+	reg exception_ptr[4] = 0;
+	mem erase_exception[16][32];
 
 	clk_prev := SCLK;
 	
@@ -50,29 +64,57 @@ module mmcspi_slave {
 		MISO = HIGH;
 	}
 	state s2 {
+		wire cmd[6];
+		wire arg[32];
+		cmd = cmd_buf[45:40];
+		arg = cmd_buf[39:8];
+		_display(" CMD%d \n",cmd);
+		_display(" ARG%h \n",arg);
 		if(rising_edge) {
 			any {
-				cmd_buf == CMD0:	{response_buf := 0x000000001; response_size := 8-1; goto s3;}
-				cmd_buf == CMD1:	{response_buf := 0x000000000; response_size := 8-1; goto s3;}
-				cmd_buf == CMD16:	{response_buf := 0x000000000; response_size := 8-1; goto s3;}
-				(cmd_buf&0xff0000000001) == CMD17:	{
-					response_buf := 0x00000000fe; response_size := 16-1;	//[15:8]00 = recv_cmd17_resp [7:0]fe = master.start_byte
-				 	read_op := 1; block_bit_pos := 4096-1;
-					read(cmd_buf[39:8]);
-				   	block_size := 4096-1;
-				    goto s3;}
-				(cmd_buf&0xff0000000001) == CMD24:	{
-					response_buf := 0x0000000000; response_size := 8-1;		//[7:0]00 = recv_cmd24_resp
+				cmd_buf == CMD0:	{response_buf := 40'(1'b1); response_size := 8-1; goto s3;}
+				cmd_buf == CMD1:	{response_buf := 40'(1'b0); response_size := 8-1; goto s3;}
+				cmd_buf == CMD16:	{response_buf := 40'(1'b0); response_size := 8-1; goto s3;}
+				cmd == 9:{
+					response_buf := 40'({r1resp,start_byte});
+					response_size := 16-1; 
+					read_op := 1; 
+					block_data := 4096'(csd); 
+					block_size := 128; goto s3;}		//read csd
+				cmd == 10:{
+					response_buf := 40'({r1resp,start_byte}); 
+					response_size := 16-1; 
+					read_op := 1; 
+					block_data := 4096'(cid); 
+					block_size := 128; goto s3;}	//read cid
+				cmd == 12:{goto s0;}	//force stop multi read
+				cmd == 13:{response_buf := 40'({r1resp,r2resp}); response_size := 16-1; goto s3;}	//read card status
+				cmd == 17:{
+					response_buf := 40'({r1resp,start_byte}); response_size := 16-1;	//[15:8]00 = recv_cmd17_resp [7:0]fe = master.start_byte
+				 	read_op := 1; block_bit_pos := 0;
+					read(arg);
+				   	block_size := 4096;
+				    goto s3;}	//read single block
+				cmd == 18:{goto s0;}	//read multi block
+				cmd == 23:{goto s0;}	//set multi r/w block count
+				cmd == 24:{
+					response_buf := 40'(r1resp); response_size := 8-1;		//[7:0]00 = recv_cmd24_resp
 				 	write_op := 1; block_bit_pos := 0;
-				   	block_size := 4096-1;
-				    goto s3;}
-				cmd_buf[47:40] == 9 && cmd_buf[0] == 1:{
-					response_buf := 
-				}
-				cmd_buf[47:40] == 10 && cmd_buf[0] == 1:
-				cmd_buf[47:40] == 58 && cmd_buf[0] == 1:{
-					response_buf := 0x
-				}
+				   	block_size := 4096;
+				    goto s3;}	//write single block
+				cmd == 25:{goto s0;}	//write multi block
+				cmd == 32:{response_buf := 40'(r1resp); response_size := 8-1; erase_head := arg; goto s3;}	//select erase head
+				cmd == 33:{response_buf := 40'(r1resp); response_size := 8-1; erase_tail := arg; goto s3;}	//select erase tail
+				cmd == 34:{response_buf := 40'(r1resp); response_size := 8-1; erase_exception[exception_ptr] := arg; exception_ptr++; goto s3;}	//select erase exception block
+				cmd == 38:{response_buf := 40'(r1resp); response_size := 8-1; busy_flag := 1;
+					erase(erase_head, erase_tail, exception_ptr, 
+					{erase_exception[0], erase_exception[1], erase_exception[2], erase_exception[3], 
+					erase_exception[4], erase_exception[5], erase_exception[6], erase_exception[7], 
+					erase_exception[8], erase_exception[9], erase_exception[10], erase_exception[11], 
+					erase_exception[12], erase_exception[13], erase_exception[14], erase_exception[15]});
+					exception_ptr := 0;
+					goto s3;}	//erase
+				cmd == 58:{response_buf := {r1resp,ocr}; response_size := 40-1; goto s3;}	//read ocr
 				else: goto s0;
 			}
 		}
@@ -89,6 +131,8 @@ module mmcspi_slave {
 					goto s4;
 				}else if(write_op){
 					goto s5;
+				}else if(busy_flag){
+					goto busy;
 				}else {
 					goto s0;
 				}
@@ -100,12 +144,12 @@ module mmcspi_slave {
 	}
 	state s4 {
 		if(rising_edge) {
-			if(block_bit_pos == 0) {
-				block_bit_pos := 4096-1;
+			if(block_bit_pos == (block_size-1)) {
+				block_bit_pos := 0;
 				read_op := 0;
 				goto s0;
 			} else {
-				block_bit_pos--;
+				block_bit_pos++;
 			}
 		}
 		MISO = block_data[block_bit_pos];
@@ -161,5 +205,18 @@ module mmcspi_slave {
 			}
 		}
 		MISO = write_response[response_size-response_buf_bit_pos];//response_buf[response_size-response_buf_bit_pos];
+	}
+	state busy{
+		reg busy_cnt[5] = 0;
+		if(rising_edge) {
+			if(busy_cnt == 31) {
+				busy_cnt := 0;
+				busy_flag := 0;
+				goto s0;
+			} else {
+				busy_cnt++;
+			}
+		}
+		MISO = LOW;
 	}
 }
