@@ -61,7 +61,7 @@ struct command_token_t
 };
 struct response_1_t
 {
-    start_bit[1];   
+    start_bit[1];
     parameter_error[1];
     address_error[1];
     erase_sequence_error[1];
@@ -71,30 +71,10 @@ struct response_1_t
     in_idle_state[1];
 };
 
-struct respose_2_t{
-    start_bit[1];   //0
-    parameter_error[1];
-    address_error[1];
-    erase_sequence_error[1];
-    communication_crc_error[1];
-    illegal_command[1];
-    erase_reset[1];
-    in_idle_state[1];
-    out_of_range[1];    //0
-    erase_param[1];
-    wp_violation[1];
-    card_ecc_failed[1];
-    cc_error[1];
-    error[1];
-    wes_or_lucf[1]; //wp erase skip or lock/unlock cmd failed
-    card_is_locked[1];
-}
-
 struct status_t
 {
-    exec[1];
     interrupt_enable[1];
-    error[1];
+    exec[1];
     idle[1];
     inited[1];
 };

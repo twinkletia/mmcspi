@@ -9,9 +9,10 @@
 #define DUMMY_CLOCK_COUNT 80
 #define SIZE_1_BYTE		8
 #define SIZE_5_BYTE		40
-#define CSB 0 //cmd_start_bit
-#define CTB 1 //cmd_transmission_bit
-#define CRC 0x00
+#define CSB 1'b0 //cmd_start_bit
+#define CTB 1'b1 //cmd_transmission_bit
+#define CRC 7'b0000000 //disabled
+#define CEB 1'b1 //cmd_end_bit
 #define CMD17_18_24_TOKEN 8'b11111110
 #define CMD25_TOKEN 8'b11111100
 #define CMD25_STOP 8'b11111101
@@ -39,7 +40,6 @@ module mmcspi {
 	reg cmd_buf[48];
 	reg response[2];
 	reg response_buf[40];
-    reg error[8];
     reg data_resp[8] = -1;
 	proc_name send_cmd(cmd_buf, response);
 	proc_name receive_response(response_buf, response);
@@ -50,6 +50,10 @@ module mmcspi {
 	wire response_lower[32];
 	operation_t reg operation = 0;
 	reg operation_adrs[32] = 0;
+	reg cmd[6];
+	reg arg[32];
+	reg resp[32];
+    reg r1state[8];
 	status_t reg status = 0;
 
 	clk = if(status.inited) clk_25mhz else clk_100khz;
@@ -173,8 +177,11 @@ module mmcspi {
 			if((cmd_buf_bit_pos-1) == 0) {
 				cmd_buf_bit_pos := 48;
 				receive_response(0xffffffffff, response);
-					#ifdef CV
-					#endif
+				#ifdef CV
+				if(SW[5]){
+					debug_led_4();
+				}
+				#endif
 			} else {
 				cmd_buf_bit_pos--;
 			}
@@ -200,6 +207,9 @@ module mmcspi {
                     }
 					goto receive_response_body;
 					#ifdef CV
+					if(SW[5]){
+						debug_led_5();
+					}
 					#endif
 				}
 			}
@@ -209,9 +219,15 @@ module mmcspi {
 				if(response_buf_bit_pos == (response_size-1)) {
 					response_buf_bit_pos := 0;
                     any{
-                        response[1] == 0: error := {response_buf[6:0],miso}; //RES_R1 or RES_R1B
-                        response == RES_R2: error := {response_buf[14:8],miso};
-                        response == RES_R3: error := {response_buf[38:32],miso};
+                        response[1] == 0: r1state := {response_buf[6:0],miso}; //RES_R1 or RES_R1B
+                        response == RES_R2:{
+							r1state := {response_buf[14:7]};
+							resp := {response_buf[6:0],miso};
+						}
+                        response == RES_R3:{
+							r1state := {response_buf[38:31]};
+							resp := {response_buf[30:0],miso};
+						} 
                     }
                     if(response == RES_R1B){
                         goto r1b_busy_wait;
@@ -223,6 +239,9 @@ module mmcspi {
 					    goto receive_start_bit;
 					}
 					#ifdef CV
+					if(SW[5]){
+						debug_led_6();
+					}
 					#endif
 				} else {
 					response_buf_bit_pos++;
@@ -236,6 +255,11 @@ module mmcspi {
                 if({r1b_busy[6:0],miso} == 0xFF) {
                     idle();
                     goto receive_start_bit;
+					#ifdef CV
+					if(SW[5]){
+						debug_led_7();
+					}
+					#endif
                 }
 				r1b_busy := {r1b_busy[6:0], miso};	
 			}
@@ -245,9 +269,9 @@ module mmcspi {
 		MOSI = HIGH;
 	}
 	proc idle {
-		state_name s0, s1, dummy;
-		state_name recv_cmd17_resp, recv_data_packet_start_byte, recv_data_packet_data_block, recv_data_packet_crc;
-		state_name recv_cmd24_resp, send_data_packet_start_byte, send_data_packet_data_block, send_data_packet_crc, recv_data_resp;
+		state_name s0, s1, s2, send_irq;
+		state_name recv_data_packet_start_byte, recv_data_packet_data_block, recv_data_packet_crc;
+		state_name send_data_packet_start_byte, send_data_packet_data_block, send_data_packet_crc, recv_data_resp;
 		reg start_byte_buf[8] = 0;
 		reg start_byte[8] = 0xfe;
 		reg recieve_size[13] = 4096;
@@ -280,23 +304,32 @@ module mmcspi {
                     cmd == 58: res = RES_R3;
                     else: res = RES_R1;
                 }
-                send_cmd({CSB,CTB,cmd,arg,CRC},res);
+                send_cmd({CSB,CTB,cmd,arg,CRC,CEB},res);
                 goto s2;
             }
 		    status.idle := !status.exec;
 			CS = HIGH;
 			SCLK = clk;
 			MOSI = HIGH;
+			#ifdef CV
+			if(SW[5]){
+				any{
+					status.inited: debug_led_1();
+					status.idle: debug_led_2();
+					status.exec: debug_led_3();
+				}
+			}
+			#endif
 		}
         state s2{
-            if(error == 0x00){
+            if(r1state == 0x00){
                 any {
                     cmd == 9 | cmd == 10 | cmd == 17 | cmd == 18: goto recv_data_packet_start_byte;
                     cmd == 24 | cmd == 25: goto send_data_packet_start_byte;
 					else: goto send_irq;
                 }
 				any{
-                    cmd == 9 | cmd == 10 | cmd == 17 | cmd == 18 | cmd == 24: start_byte := 0xfe
+                    cmd == 9 | cmd == 10 | cmd == 17 | cmd == 18 | cmd == 24: start_byte := 0xfe;
                     cmd == 25: start_byte := 0xfc;
 					cmd == 9 | cmd == 10: recieve_size := 128;
 					cmd == 17 | cmd == 18: recieve_size := 4096;
@@ -314,8 +347,6 @@ module mmcspi {
 				if({start_byte_buf[6:0], miso} == start_byte) {
 					start_byte_buf := 0;
 					goto recv_data_packet_data_block;
-					#ifdef CV
-					#endif
 				} else {
 					start_byte_buf := {start_byte_buf[6:0], miso};
 				}
@@ -332,8 +363,6 @@ module mmcspi {
 				if(data_block_bit_pos == (recieve_size-1)) {
 					data_block_bit_pos := 0;
 					goto recv_data_packet_crc;
-					#ifdef CV
-					#endif
 				} else {
 					data_block_bit_pos++;
 				}
@@ -355,8 +384,6 @@ module mmcspi {
 					}else{
 						goto send_irq;
 					}
-					#ifdef CV
-					#endif
 				} else {
 					crc_bit_pos++;
 				}
@@ -374,11 +401,6 @@ module mmcspi {
 				if(start_byte_send_bit_pos == 0) {
 					start_byte_send_bit_pos := 7;
 					goto send_data_packet_data_block;
-					#ifdef CV
-					if(SW[5]){
-						debug_led_3();
-					}
-					#endif
 				} else {
 					start_byte_send_bit_pos--;
 				}
@@ -400,11 +422,6 @@ module mmcspi {
 					write_data_column := 127;
 					write_data_row := 31;
 					goto send_data_packet_crc;
-					#ifdef CV
-					if(SW[5]){
-						debug_led_4();
-					}
-					#endif
 				} else if(write_data_row != 0){
 					//write_data_block_bit_pos--;
 					write_data_row--;
@@ -427,11 +444,6 @@ module mmcspi {
 				if(crc_send_bit_pos == 0) {
 					crc_send_bit_pos := 15;
 					goto recv_data_resp;
-					#ifdef CV
-					if(SW[5]){
-						debug_led_5();
-					}
-					#endif
 				} else {
 					crc_send_bit_pos--;
 				}
@@ -455,7 +467,6 @@ module mmcspi {
 							    goto send_irq;
                             }
 						}else{
-							status.error := HIGH;
 							goto s1;
 						}
 					}
@@ -473,6 +484,7 @@ module mmcspi {
 				if(status.interrupt_enable){
 					interrupt_req();
 				}
+				status.exec := LOW;
             	goto s1;
 			}
 			CS = LOW;
@@ -482,7 +494,8 @@ module mmcspi {
 	}
 	func read {
 		wire read_data[32];
-
+		wire formated_rdata[32]; //convert big enfian to little enian
+		
 		response_lower = response_buf[31:0];
 		response_upper = {0x000000, response_buf[39:32]};
 		any {
@@ -615,158 +628,174 @@ module mmcspi {
 			read_adrs == 12'(0x1f8): {read_data = read_data_block[63:32]; valid();}
 			read_adrs == 12'(0x1fc): {read_data = read_data_block[31:0]; valid(); #ifdef CV debug_sseg_l12(read_data[11:0]); #endif}
 			read_adrs == 12'(0x200): {read_data = 32'(status); valid();}
-			read_adrs == 12'(0x204): {read_data = response_lower; valid();}	//reg response[32];
-			read_adrs == 12'(0x208): {read_data = response_upper; valid();}	//reg ocr[32]
-			read_adrs == 12'(0x20c): {read_data = cmd; valid();}	//reg cmd[32]
-			read_adrs == 12'(0x210): {read_data = arg; valid();}	//reg arg[32]
+			read_adrs == 12'(0x204): {read_data = 32'(r1state); valid();}
+			read_adrs == 12'(0x208): {read_data = resp; valid();}
+			read_adrs == 12'(0x20c): {read_data = 32'(cmd); valid();}
+			read_adrs == 12'(0x210): {read_data = 32'(arg); valid();}
+			read_adrs == 12'(0x214): {read_data = read_data_block[127:96]; valid();}	//csd/cid
+			read_adrs == 12'(0x218): {read_data = read_data_block[95:64]; valid();}
+			read_adrs == 12'(0x21c): {read_data = read_data_block[63:32]; valid();}
+			read_adrs == 12'(0x220): {read_data = read_data_block[31:0]; valid();}
 			else: load_access_fault();
 		}
+		if(read_adrs < 0x200){
+			formated_rdata = {read_data[7:0],read_data[15:8],read_data[23:16],read_data[31:24]};
+		}else{
+			formated_rdata = read_data;
+		}
 		any {
-			(byteen == MEM_WORD):							rdata = read_data;
-			(byteen == MEM_HALFWORD && ~read_adrs[1]):			rdata = {0x0000, read_data[15:0]};
-			(byteen == MEM_HALFWORD && read_adrs[1]):			rdata = {0x0000, read_data[31:16]};
-			(byteen == MEM_BYTE && (read_adrs[1:0] == 2'b00)):	rdata = {0x000000, read_data[7:0]};
-			(byteen == MEM_BYTE && (read_adrs[1:0] == 2'b01)):	rdata = {0x000000, read_data[15:8]};
-			(byteen == MEM_BYTE && (read_adrs[1:0] == 2'b10)):	rdata = {0x000000, read_data[23:16]};
-			(byteen == MEM_BYTE && (read_adrs[1:0] == 2'b11)):	rdata = {0x000000, read_data[31:24]};
+			(byteen == MEM_WORD):							rdata = formated_rdata;
+			(byteen == MEM_HALFWORD && ~read_adrs[1]):			rdata = {0x0000, formated_rdata[15:0]};
+			(byteen == MEM_HALFWORD && read_adrs[1]):			rdata = {0x0000, formated_rdata[31:16]};
+			(byteen == MEM_BYTE && (read_adrs[1:0] == 2'b00)):	rdata = {0x000000, formated_rdata[7:0]};
+			(byteen == MEM_BYTE && (read_adrs[1:0] == 2'b01)):	rdata = {0x000000, formated_rdata[15:8]};
+			(byteen == MEM_BYTE && (read_adrs[1:0] == 2'b10)):	rdata = {0x000000, formated_rdata[23:16]};
+			(byteen == MEM_BYTE && (read_adrs[1:0] == 2'b11)):	rdata = {0x000000, formated_rdata[31:24]};
 		}
 	}
 	func write {
 		variable new_data[32];
 		wire old_data[32];
+		wire formated_wdata[32];	//convert big enfian to little enian
+
+		if(write_adrs < 0x200){
+			formated_wdata = {wdata[7:0],wdata[15:8],wdata[23:16],wdata[31:24]};
+		}else{
+			formated_wdata = wdata;
+		}
 
 		any {
-			write_adrs == 12'(0x0): {write_data_block[127] := wdata; valid();}
-			write_adrs == 12'(0x4): {write_data_block[126] := wdata; valid();}
-			write_adrs == 12'(0x8): {write_data_block[125] := wdata; valid();}
-			write_adrs == 12'(0xc): {write_data_block[124] := wdata; valid();}
-			write_adrs == 12'(0x10): {write_data_block[123] := wdata; valid();}
-			write_adrs == 12'(0x14): {write_data_block[122] := wdata; valid();}
-			write_adrs == 12'(0x18): {write_data_block[121] := wdata; valid();}
-			write_adrs == 12'(0x1c): {write_data_block[120] := wdata; valid();}
-			write_adrs == 12'(0x20): {write_data_block[119] := wdata; valid();}
-			write_adrs == 12'(0x24): {write_data_block[118] := wdata; valid();}
-			write_adrs == 12'(0x28): {write_data_block[117] := wdata; valid();}
-			write_adrs == 12'(0x2c): {write_data_block[116] := wdata; valid();}
-			write_adrs == 12'(0x30): {write_data_block[115] := wdata; valid();}
-			write_adrs == 12'(0x34): {write_data_block[114] := wdata; valid();}
-			write_adrs == 12'(0x38): {write_data_block[113] := wdata; valid();}
-			write_adrs == 12'(0x3c): {write_data_block[112] := wdata; valid();}
-			write_adrs == 12'(0x40): {write_data_block[111] := wdata; valid();}
-			write_adrs == 12'(0x44): {write_data_block[110] := wdata; valid();}
-			write_adrs == 12'(0x48): {write_data_block[109] := wdata; valid();}
-			write_adrs == 12'(0x4c): {write_data_block[108] := wdata; valid();}
-			write_adrs == 12'(0x50): {write_data_block[107] := wdata; valid();}
-			write_adrs == 12'(0x54): {write_data_block[106] := wdata; valid();}
-			write_adrs == 12'(0x58): {write_data_block[105] := wdata; valid();}
-			write_adrs == 12'(0x5c): {write_data_block[104] := wdata; valid();}
-			write_adrs == 12'(0x60): {write_data_block[103] := wdata; valid();}
-			write_adrs == 12'(0x64): {write_data_block[102] := wdata; valid();}
-			write_adrs == 12'(0x68): {write_data_block[101] := wdata; valid();}
-			write_adrs == 12'(0x6c): {write_data_block[100] := wdata; valid();}
-			write_adrs == 12'(0x70): {write_data_block[99] := wdata; valid();}
-			write_adrs == 12'(0x74): {write_data_block[98] := wdata; valid();}
-			write_adrs == 12'(0x78): {write_data_block[97] := wdata; valid();}
-			write_adrs == 12'(0x7c): {write_data_block[96] := wdata; valid();}
-			write_adrs == 12'(0x80): {write_data_block[95] := wdata; valid();}
-			write_adrs == 12'(0x84): {write_data_block[94] := wdata; valid();}
-			write_adrs == 12'(0x88): {write_data_block[93] := wdata; valid();}
-			write_adrs == 12'(0x8c): {write_data_block[92] := wdata; valid();}
-			write_adrs == 12'(0x90): {write_data_block[91] := wdata; valid();}
-			write_adrs == 12'(0x94): {write_data_block[90] := wdata; valid();}
-			write_adrs == 12'(0x98): {write_data_block[89] := wdata; valid();}
-			write_adrs == 12'(0x9c): {write_data_block[88] := wdata; valid();}
-			write_adrs == 12'(0xa0): {write_data_block[87] := wdata; valid();}
-			write_adrs == 12'(0xa4): {write_data_block[86] := wdata; valid();}
-			write_adrs == 12'(0xa8): {write_data_block[85] := wdata; valid();}
-			write_adrs == 12'(0xac): {write_data_block[84] := wdata; valid();}
-			write_adrs == 12'(0xb0): {write_data_block[83] := wdata; valid();}
-			write_adrs == 12'(0xb4): {write_data_block[82] := wdata; valid();}
-			write_adrs == 12'(0xb8): {write_data_block[81] := wdata; valid();}
-			write_adrs == 12'(0xbc): {write_data_block[80] := wdata; valid();}
-			write_adrs == 12'(0xc0): {write_data_block[79] := wdata; valid();}
-			write_adrs == 12'(0xc4): {write_data_block[78] := wdata; valid();}
-			write_adrs == 12'(0xc8): {write_data_block[77] := wdata; valid();}
-			write_adrs == 12'(0xcc): {write_data_block[76] := wdata; valid();}
-			write_adrs == 12'(0xd0): {write_data_block[75] := wdata; valid();}
-			write_adrs == 12'(0xd4): {write_data_block[74] := wdata; valid();}
-			write_adrs == 12'(0xd8): {write_data_block[73] := wdata; valid();}
-			write_adrs == 12'(0xdc): {write_data_block[72] := wdata; valid();}
-			write_adrs == 12'(0xe0): {write_data_block[71] := wdata; valid();}
-			write_adrs == 12'(0xe4): {write_data_block[70] := wdata; valid();}
-			write_adrs == 12'(0xe8): {write_data_block[69] := wdata; valid();}
-			write_adrs == 12'(0xec): {write_data_block[68] := wdata; valid();}
-			write_adrs == 12'(0xf0): {write_data_block[67] := wdata; valid();}
-			write_adrs == 12'(0xf4): {write_data_block[66] := wdata; valid();}
-			write_adrs == 12'(0xf8): {write_data_block[65] := wdata; valid();}
-			write_adrs == 12'(0xfc): {write_data_block[64] := wdata; valid();}
-			write_adrs == 12'(0x100): {write_data_block[63] := wdata; valid();}
-			write_adrs == 12'(0x104): {write_data_block[62] := wdata; valid();}
-			write_adrs == 12'(0x108): {write_data_block[61] := wdata; valid();}
-			write_adrs == 12'(0x10c): {write_data_block[60] := wdata; valid();}
-			write_adrs == 12'(0x110): {write_data_block[59] := wdata; valid();}
-			write_adrs == 12'(0x114): {write_data_block[58] := wdata; valid();}
-			write_adrs == 12'(0x118): {write_data_block[57] := wdata; valid();}
-			write_adrs == 12'(0x11c): {write_data_block[56] := wdata; valid();}
-			write_adrs == 12'(0x120): {write_data_block[55] := wdata; valid();}
-			write_adrs == 12'(0x124): {write_data_block[54] := wdata; valid();}
-			write_adrs == 12'(0x128): {write_data_block[53] := wdata; valid();}
-			write_adrs == 12'(0x12c): {write_data_block[52] := wdata; valid();}
-			write_adrs == 12'(0x130): {write_data_block[51] := wdata; valid();}
-			write_adrs == 12'(0x134): {write_data_block[50] := wdata; valid();}
-			write_adrs == 12'(0x138): {write_data_block[49] := wdata; valid();}
-			write_adrs == 12'(0x13c): {write_data_block[48] := wdata; valid();}
-			write_adrs == 12'(0x140): {write_data_block[47] := wdata; valid();}
-			write_adrs == 12'(0x144): {write_data_block[46] := wdata; valid();}
-			write_adrs == 12'(0x148): {write_data_block[45] := wdata; valid();}
-			write_adrs == 12'(0x14c): {write_data_block[44] := wdata; valid();}
-			write_adrs == 12'(0x150): {write_data_block[43] := wdata; valid();}
-			write_adrs == 12'(0x154): {write_data_block[42] := wdata; valid();}
-			write_adrs == 12'(0x158): {write_data_block[41] := wdata; valid();}
-			write_adrs == 12'(0x15c): {write_data_block[40] := wdata; valid();}
-			write_adrs == 12'(0x160): {write_data_block[39] := wdata; valid();}
-			write_adrs == 12'(0x164): {write_data_block[38] := wdata; valid();}
-			write_adrs == 12'(0x168): {write_data_block[37] := wdata; valid();}
-			write_adrs == 12'(0x16c): {write_data_block[36] := wdata; valid();}
-			write_adrs == 12'(0x170): {write_data_block[35] := wdata; valid();}
-			write_adrs == 12'(0x174): {write_data_block[34] := wdata; valid();}
-			write_adrs == 12'(0x178): {write_data_block[33] := wdata; valid();}
-			write_adrs == 12'(0x17c): {write_data_block[32] := wdata; valid();}
-			write_adrs == 12'(0x180): {write_data_block[31] := wdata; valid();}
-			write_adrs == 12'(0x184): {write_data_block[30] := wdata; valid();}
-			write_adrs == 12'(0x188): {write_data_block[29] := wdata; valid();}
-			write_adrs == 12'(0x18c): {write_data_block[28] := wdata; valid();}
-			write_adrs == 12'(0x190): {write_data_block[27] := wdata; valid();}
-			write_adrs == 12'(0x194): {write_data_block[26] := wdata; valid();}
-			write_adrs == 12'(0x198): {write_data_block[25] := wdata; valid();}
-			write_adrs == 12'(0x19c): {write_data_block[24] := wdata; valid();}
-			write_adrs == 12'(0x1a0): {write_data_block[23] := wdata; valid();}
-			write_adrs == 12'(0x1a4): {write_data_block[22] := wdata; valid();}
-			write_adrs == 12'(0x1a8): {write_data_block[21] := wdata; valid();}
-			write_adrs == 12'(0x1ac): {write_data_block[20] := wdata; valid();}
-			write_adrs == 12'(0x1b0): {write_data_block[19] := wdata; valid();}
-			write_adrs == 12'(0x1b4): {write_data_block[18] := wdata; valid();}
-			write_adrs == 12'(0x1b8): {write_data_block[17] := wdata; valid();}
-			write_adrs == 12'(0x1bc): {write_data_block[16] := wdata; valid();}
-			write_adrs == 12'(0x1c0): {write_data_block[15] := wdata; valid();}
-			write_adrs == 12'(0x1c4): {write_data_block[14] := wdata; valid();}
-			write_adrs == 12'(0x1c8): {write_data_block[13] := wdata; valid();}
-			write_adrs == 12'(0x1cc): {write_data_block[12] := wdata; valid();}
-			write_adrs == 12'(0x1d0): {write_data_block[11] := wdata; valid();}
-			write_adrs == 12'(0x1d4): {write_data_block[10] := wdata; valid();}
-			write_adrs == 12'(0x1d8): {write_data_block[9] := wdata; valid();}
-			write_adrs == 12'(0x1dc): {write_data_block[8] := wdata; valid();}
-			write_adrs == 12'(0x1e0): {write_data_block[7] := wdata; valid();}
-			write_adrs == 12'(0x1e4): {write_data_block[6] := wdata; valid();}
-			write_adrs == 12'(0x1e8): {write_data_block[5] := wdata; valid();}
-			write_adrs == 12'(0x1ec): {write_data_block[4] := wdata; valid();}
-			write_adrs == 12'(0x1f0): {write_data_block[3] := wdata; valid();}
-			write_adrs == 12'(0x1f4): {write_data_block[2] := wdata; valid();}
-			write_adrs == 12'(0x1f8): {write_data_block[1] := wdata; valid();}
-			write_adrs == 12'(0x1fc): {write_data_block[0] := wdata; valid(); #ifdef CV debug_sseg_h12(wdata[11:0]); #endif}
-			write_adrs == 12'(0x200): {old_data = status; status.interrupt_enable := wdata[3]; status.exec := wdata[2]; valid();}
-			write_adrs == 12'(0x20c): {cmd := wdata; valid();}	//reg cmd[32]
-			write_adrs == 12'(0x210): {arg := wdata; valid();}	//reg arg[32]
+			write_adrs == 12'(0x0): {write_data_block[127] := formated_wdata; valid();}
+			write_adrs == 12'(0x4): {write_data_block[126] := formated_wdata; valid();}
+			write_adrs == 12'(0x8): {write_data_block[125] := formated_wdata; valid();}
+			write_adrs == 12'(0xc): {write_data_block[124] := formated_wdata; valid();}
+			write_adrs == 12'(0x10): {write_data_block[123] := formated_wdata; valid();}
+			write_adrs == 12'(0x14): {write_data_block[122] := formated_wdata; valid();}
+			write_adrs == 12'(0x18): {write_data_block[121] := formated_wdata; valid();}
+			write_adrs == 12'(0x1c): {write_data_block[120] := formated_wdata; valid();}
+			write_adrs == 12'(0x20): {write_data_block[119] := formated_wdata; valid();}
+			write_adrs == 12'(0x24): {write_data_block[118] := formated_wdata; valid();}
+			write_adrs == 12'(0x28): {write_data_block[117] := formated_wdata; valid();}
+			write_adrs == 12'(0x2c): {write_data_block[116] := formated_wdata; valid();}
+			write_adrs == 12'(0x30): {write_data_block[115] := formated_wdata; valid();}
+			write_adrs == 12'(0x34): {write_data_block[114] := formated_wdata; valid();}
+			write_adrs == 12'(0x38): {write_data_block[113] := formated_wdata; valid();}
+			write_adrs == 12'(0x3c): {write_data_block[112] := formated_wdata; valid();}
+			write_adrs == 12'(0x40): {write_data_block[111] := formated_wdata; valid();}
+			write_adrs == 12'(0x44): {write_data_block[110] := formated_wdata; valid();}
+			write_adrs == 12'(0x48): {write_data_block[109] := formated_wdata; valid();}
+			write_adrs == 12'(0x4c): {write_data_block[108] := formated_wdata; valid();}
+			write_adrs == 12'(0x50): {write_data_block[107] := formated_wdata; valid();}
+			write_adrs == 12'(0x54): {write_data_block[106] := formated_wdata; valid();}
+			write_adrs == 12'(0x58): {write_data_block[105] := formated_wdata; valid();}
+			write_adrs == 12'(0x5c): {write_data_block[104] := formated_wdata; valid();}
+			write_adrs == 12'(0x60): {write_data_block[103] := formated_wdata; valid();}
+			write_adrs == 12'(0x64): {write_data_block[102] := formated_wdata; valid();}
+			write_adrs == 12'(0x68): {write_data_block[101] := formated_wdata; valid();}
+			write_adrs == 12'(0x6c): {write_data_block[100] := formated_wdata; valid();}
+			write_adrs == 12'(0x70): {write_data_block[99] := formated_wdata; valid();}
+			write_adrs == 12'(0x74): {write_data_block[98] := formated_wdata; valid();}
+			write_adrs == 12'(0x78): {write_data_block[97] := formated_wdata; valid();}
+			write_adrs == 12'(0x7c): {write_data_block[96] := formated_wdata; valid();}
+			write_adrs == 12'(0x80): {write_data_block[95] := formated_wdata; valid();}
+			write_adrs == 12'(0x84): {write_data_block[94] := formated_wdata; valid();}
+			write_adrs == 12'(0x88): {write_data_block[93] := formated_wdata; valid();}
+			write_adrs == 12'(0x8c): {write_data_block[92] := formated_wdata; valid();}
+			write_adrs == 12'(0x90): {write_data_block[91] := formated_wdata; valid();}
+			write_adrs == 12'(0x94): {write_data_block[90] := formated_wdata; valid();}
+			write_adrs == 12'(0x98): {write_data_block[89] := formated_wdata; valid();}
+			write_adrs == 12'(0x9c): {write_data_block[88] := formated_wdata; valid();}
+			write_adrs == 12'(0xa0): {write_data_block[87] := formated_wdata; valid();}
+			write_adrs == 12'(0xa4): {write_data_block[86] := formated_wdata; valid();}
+			write_adrs == 12'(0xa8): {write_data_block[85] := formated_wdata; valid();}
+			write_adrs == 12'(0xac): {write_data_block[84] := formated_wdata; valid();}
+			write_adrs == 12'(0xb0): {write_data_block[83] := formated_wdata; valid();}
+			write_adrs == 12'(0xb4): {write_data_block[82] := formated_wdata; valid();}
+			write_adrs == 12'(0xb8): {write_data_block[81] := formated_wdata; valid();}
+			write_adrs == 12'(0xbc): {write_data_block[80] := formated_wdata; valid();}
+			write_adrs == 12'(0xc0): {write_data_block[79] := formated_wdata; valid();}
+			write_adrs == 12'(0xc4): {write_data_block[78] := formated_wdata; valid();}
+			write_adrs == 12'(0xc8): {write_data_block[77] := formated_wdata; valid();}
+			write_adrs == 12'(0xcc): {write_data_block[76] := formated_wdata; valid();}
+			write_adrs == 12'(0xd0): {write_data_block[75] := formated_wdata; valid();}
+			write_adrs == 12'(0xd4): {write_data_block[74] := formated_wdata; valid();}
+			write_adrs == 12'(0xd8): {write_data_block[73] := formated_wdata; valid();}
+			write_adrs == 12'(0xdc): {write_data_block[72] := formated_wdata; valid();}
+			write_adrs == 12'(0xe0): {write_data_block[71] := formated_wdata; valid();}
+			write_adrs == 12'(0xe4): {write_data_block[70] := formated_wdata; valid();}
+			write_adrs == 12'(0xe8): {write_data_block[69] := formated_wdata; valid();}
+			write_adrs == 12'(0xec): {write_data_block[68] := formated_wdata; valid();}
+			write_adrs == 12'(0xf0): {write_data_block[67] := formated_wdata; valid();}
+			write_adrs == 12'(0xf4): {write_data_block[66] := formated_wdata; valid();}
+			write_adrs == 12'(0xf8): {write_data_block[65] := formated_wdata; valid();}
+			write_adrs == 12'(0xfc): {write_data_block[64] := formated_wdata; valid();}
+			write_adrs == 12'(0x100): {write_data_block[63] := formated_wdata; valid();}
+			write_adrs == 12'(0x104): {write_data_block[62] := formated_wdata; valid();}
+			write_adrs == 12'(0x108): {write_data_block[61] := formated_wdata; valid();}
+			write_adrs == 12'(0x10c): {write_data_block[60] := formated_wdata; valid();}
+			write_adrs == 12'(0x110): {write_data_block[59] := formated_wdata; valid();}
+			write_adrs == 12'(0x114): {write_data_block[58] := formated_wdata; valid();}
+			write_adrs == 12'(0x118): {write_data_block[57] := formated_wdata; valid();}
+			write_adrs == 12'(0x11c): {write_data_block[56] := formated_wdata; valid();}
+			write_adrs == 12'(0x120): {write_data_block[55] := formated_wdata; valid();}
+			write_adrs == 12'(0x124): {write_data_block[54] := formated_wdata; valid();}
+			write_adrs == 12'(0x128): {write_data_block[53] := formated_wdata; valid();}
+			write_adrs == 12'(0x12c): {write_data_block[52] := formated_wdata; valid();}
+			write_adrs == 12'(0x130): {write_data_block[51] := formated_wdata; valid();}
+			write_adrs == 12'(0x134): {write_data_block[50] := formated_wdata; valid();}
+			write_adrs == 12'(0x138): {write_data_block[49] := formated_wdata; valid();}
+			write_adrs == 12'(0x13c): {write_data_block[48] := formated_wdata; valid();}
+			write_adrs == 12'(0x140): {write_data_block[47] := formated_wdata; valid();}
+			write_adrs == 12'(0x144): {write_data_block[46] := formated_wdata; valid();}
+			write_adrs == 12'(0x148): {write_data_block[45] := formated_wdata; valid();}
+			write_adrs == 12'(0x14c): {write_data_block[44] := formated_wdata; valid();}
+			write_adrs == 12'(0x150): {write_data_block[43] := formated_wdata; valid();}
+			write_adrs == 12'(0x154): {write_data_block[42] := formated_wdata; valid();}
+			write_adrs == 12'(0x158): {write_data_block[41] := formated_wdata; valid();}
+			write_adrs == 12'(0x15c): {write_data_block[40] := formated_wdata; valid();}
+			write_adrs == 12'(0x160): {write_data_block[39] := formated_wdata; valid();}
+			write_adrs == 12'(0x164): {write_data_block[38] := formated_wdata; valid();}
+			write_adrs == 12'(0x168): {write_data_block[37] := formated_wdata; valid();}
+			write_adrs == 12'(0x16c): {write_data_block[36] := formated_wdata; valid();}
+			write_adrs == 12'(0x170): {write_data_block[35] := formated_wdata; valid();}
+			write_adrs == 12'(0x174): {write_data_block[34] := formated_wdata; valid();}
+			write_adrs == 12'(0x178): {write_data_block[33] := formated_wdata; valid();}
+			write_adrs == 12'(0x17c): {write_data_block[32] := formated_wdata; valid();}
+			write_adrs == 12'(0x180): {write_data_block[31] := formated_wdata; valid();}
+			write_adrs == 12'(0x184): {write_data_block[30] := formated_wdata; valid();}
+			write_adrs == 12'(0x188): {write_data_block[29] := formated_wdata; valid();}
+			write_adrs == 12'(0x18c): {write_data_block[28] := formated_wdata; valid();}
+			write_adrs == 12'(0x190): {write_data_block[27] := formated_wdata; valid();}
+			write_adrs == 12'(0x194): {write_data_block[26] := formated_wdata; valid();}
+			write_adrs == 12'(0x198): {write_data_block[25] := formated_wdata; valid();}
+			write_adrs == 12'(0x19c): {write_data_block[24] := formated_wdata; valid();}
+			write_adrs == 12'(0x1a0): {write_data_block[23] := formated_wdata; valid();}
+			write_adrs == 12'(0x1a4): {write_data_block[22] := formated_wdata; valid();}
+			write_adrs == 12'(0x1a8): {write_data_block[21] := formated_wdata; valid();}
+			write_adrs == 12'(0x1ac): {write_data_block[20] := formated_wdata; valid();}
+			write_adrs == 12'(0x1b0): {write_data_block[19] := formated_wdata; valid();}
+			write_adrs == 12'(0x1b4): {write_data_block[18] := formated_wdata; valid();}
+			write_adrs == 12'(0x1b8): {write_data_block[17] := formated_wdata; valid();}
+			write_adrs == 12'(0x1bc): {write_data_block[16] := formated_wdata; valid();}
+			write_adrs == 12'(0x1c0): {write_data_block[15] := formated_wdata; valid();}
+			write_adrs == 12'(0x1c4): {write_data_block[14] := formated_wdata; valid();}
+			write_adrs == 12'(0x1c8): {write_data_block[13] := formated_wdata; valid();}
+			write_adrs == 12'(0x1cc): {write_data_block[12] := formated_wdata; valid();}
+			write_adrs == 12'(0x1d0): {write_data_block[11] := formated_wdata; valid();}
+			write_adrs == 12'(0x1d4): {write_data_block[10] := formated_wdata; valid();}
+			write_adrs == 12'(0x1d8): {write_data_block[9] := formated_wdata; valid();}
+			write_adrs == 12'(0x1dc): {write_data_block[8] := formated_wdata; valid();}
+			write_adrs == 12'(0x1e0): {write_data_block[7] := formated_wdata; valid();}
+			write_adrs == 12'(0x1e4): {write_data_block[6] := formated_wdata; valid();}
+			write_adrs == 12'(0x1e8): {write_data_block[5] := formated_wdata; valid();}
+			write_adrs == 12'(0x1ec): {write_data_block[4] := formated_wdata; valid();}
+			write_adrs == 12'(0x1f0): {write_data_block[3] := formated_wdata; valid();}
+			write_adrs == 12'(0x1f4): {write_data_block[2] := formated_wdata; valid();}
+			write_adrs == 12'(0x1f8): {write_data_block[1] := formated_wdata; valid();}
+			write_adrs == 12'(0x1fc): {write_data_block[0] := formated_wdata; valid(); #ifdef CV debug_sseg_h12(formated_wdata[11:0]); #endif}
+			write_adrs == 12'(0x200): {old_data = status; status.interrupt_enable := formated_wdata[3]; status.exec := formated_wdata[2]; valid();}
+			write_adrs == 12'(0x20c): {cmd := formated_wdata[5:0]; valid();}
+			write_adrs == 12'(0x210): {arg := formated_wdata; valid();}
 			else: store_amo_access_fault();
 		}
 		/*
