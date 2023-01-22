@@ -32,7 +32,7 @@ module mmcspi_slave {
 	reg cid[128] = 0xa91a8000_ace35b0c_42e24c22_ca120ae4;//27504853_44324742_30dac735_00015895;
 	reg ocr[32] = 0x80ff8000;
 	reg r1resp[8] = 0x00;
-	reg r2resp[8] = 0xAB;
+	reg r2resp[8] = 0x00;
 	reg busy_flag = 0;
 	reg erase_head[32] = 0;
 	reg erase_tail[32] = 0;
@@ -68,8 +68,7 @@ module mmcspi_slave {
 		wire arg[32];
 		cmd = cmd_buf[45:40];
 		arg = cmd_buf[39:8];
-		_display(" CMD%d \n",cmd);
-		_display(" ARG%h \n",arg);
+		_display(" CMD%d 0xARG %h\n",cmd,arg);
 		if(rising_edge) {
 			any {
 				cmd_buf == CMD0:	{response_buf := 40'(1'b1); response_size := 8-1; goto s3;}
@@ -87,7 +86,7 @@ module mmcspi_slave {
 					read_op := 1; 
 					block_data := 4096'(cid); 
 					block_size := 128; goto s3;}	//read cid
-				cmd == 12:{goto s0;}	//force stop multi read
+				cmd == 12:{}	//force stop multi read
 				cmd == 13:{response_buf := 40'({r1resp,r2resp}); response_size := 16-1; goto s3;}	//read card status
 				cmd == 17:{
 					response_buf := 40'({r1resp,start_byte}); response_size := 16-1;	//[15:8]00 = recv_cmd17_resp [7:0]fe = master.start_byte
@@ -95,14 +94,14 @@ module mmcspi_slave {
 					read(arg);
 				   	block_size := 4096;
 				    goto s3;}	//read single block
-				cmd == 18:{goto s0;}	//read multi block
-				cmd == 23:{goto s0;}	//set multi r/w block count
+				cmd == 18:{}	//read multi block
+				cmd == 23:{}	//set multi r/w block count
 				cmd == 24:{
 					response_buf := 40'(r1resp); response_size := 8-1;		//[7:0]00 = recv_cmd24_resp
 				 	write_op := 1; block_bit_pos := 0;
 				   	block_size := 4096;
 				    goto s3;}	//write single block
-				cmd == 25:{goto s0;}	//write multi block
+				cmd == 25:{}	//write multi block
 				cmd == 32:{response_buf := 40'(r1resp); response_size := 8-1; erase_head := arg; goto s3;}	//select erase head
 				cmd == 33:{response_buf := 40'(r1resp); response_size := 8-1; erase_tail := arg; goto s3;}	//select erase tail
 				cmd == 34:{response_buf := 40'(r1resp); response_size := 8-1; erase_exception[exception_ptr] := arg; exception_ptr++; goto s3;}	//select erase exception block
@@ -115,7 +114,7 @@ module mmcspi_slave {
 					exception_ptr := 0;
 					goto s3;}	//erase
 				cmd == 58:{response_buf := {r1resp,ocr}; response_size := 40-1; goto s3;}	//read ocr
-				else: goto s0;
+				else: {response_buf := 40'(0x04); response_size := 8-1; goto s3;}	//unsupported command(response illegal cmd bit)
 			}
 		}
 		MISO = HIGH;
