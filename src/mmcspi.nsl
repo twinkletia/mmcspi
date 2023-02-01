@@ -13,9 +13,9 @@
 #define CTB 1'b1 //cmd_transmission_bit
 #define CRC 7'b0000000 //disabled
 #define CEB 1'b1 //cmd_end_bit
-#define CMD17_18_24_TOKEN 8'b11111110
-#define CMD25_TOKEN 8'b11111100
-#define CMD25_STOP 8'b11111101
+#define READ_TOKEN 8'b11111110
+#define MULTI_WRITE_TOKEN 8'b11111100
+#define STOP_TOKEN 8'b11111101
 #define ACCEPTED 4'b0101
 #define RES_R1B 2'b00
 #define RES_R1 2'b01
@@ -324,21 +324,19 @@ module mmcspi {
         state s2{
             if(r1state == 0x00){
                 any {
-                    cmd == 9 | cmd == 10 | cmd == 17 | cmd == 18: goto recv_data_packet_start_byte;
+                    cmd == 9 | cmd == 10 | cmd == 17 | cmd == 18 | cmd == 51: goto recv_data_packet_start_byte;
                     cmd == 24 | cmd == 25: goto send_data_packet_start_byte;
 					else: goto send_irq;
                 }
 				any{
-                    cmd == 9 | cmd == 10 | cmd == 17 | cmd == 18 | cmd == 24: start_byte := 0xfe;
+                    cmd == 9 | cmd == 10 | cmd == 17 | cmd == 18 | cmd == 24 | cmd == 51: start_byte := 0xfe;
                     cmd == 25: start_byte := 0xfc;
-					cmd == 9 | cmd == 10: recieve_size := 128;
-					cmd == 17 | cmd == 18: recieve_size := 4096;
 				}
             }else{
                 goto send_irq;
             }
 			start_byte_buf := {start_byte_buf[6:0], miso};
-			CS = HIGH;
+			CS = LOW;
 			SCLK = clk;
 			MOSI = HIGH;
         }
@@ -487,7 +485,7 @@ module mmcspi {
 				status.exec := LOW;
             	goto s1;
 			}
-			CS = LOW;
+			CS = HIGH;
 			SCLK = clk;
 			MOSI = HIGH;
         }
@@ -632,10 +630,6 @@ module mmcspi {
 			read_adrs == 12'(0x208): {read_data = resp; valid();}
 			read_adrs == 12'(0x20c): {read_data = 32'(cmd); valid();}
 			read_adrs == 12'(0x210): {read_data = 32'(arg); valid();}
-			read_adrs == 12'(0x214): {read_data = read_data_block[127:96]; valid();}	//csd/cid
-			read_adrs == 12'(0x218): {read_data = read_data_block[95:64]; valid();}
-			read_adrs == 12'(0x21c): {read_data = read_data_block[63:32]; valid();}
-			read_adrs == 12'(0x220): {read_data = read_data_block[31:0]; valid();}
 			else: load_access_fault();
 		}
 		if(read_adrs < 0x200){
