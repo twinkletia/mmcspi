@@ -68,7 +68,7 @@ module mmcspi_slave {
 		wire arg[32];
 		cmd = cmd_buf[45:40];
 		arg = cmd_buf[39:8];
-		_display(" CMD%d 0xARG %h\n",cmd,arg);
+		_display(" CMD%d 0xARG %h ",cmd,arg);
 		if(rising_edge) {
 			any {
 				cmd_buf == CMD0:	{response_buf := 40'(1'b1); response_size := 8-1; goto s3;}
