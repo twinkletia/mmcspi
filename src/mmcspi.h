@@ -78,12 +78,17 @@ struct status_t
     idle[1];
     inited[1];
 };
-struct operation_t
+struct types_t
 {
-    x[30];
-    write[1];
+    transfer_bytes[16]; //
+    align[5];
+    resp_type[4];
+    cmd_type[2];
+    reserved[3];
     read[1];
+    write[1];
 };
+
 
 #define CMD0 0x40_00_00_00_00_95
 #define CMD1 0x41_00_00_00_00_f9
