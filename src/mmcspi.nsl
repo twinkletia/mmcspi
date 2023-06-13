@@ -5,7 +5,7 @@
 #define MEM_BYTE        3'b000
 
 #define CLK_100KHZ_COUNT 250
-#define TM_1MS_COUNT	65535
+#define TM_1MS_COUNT	100
 #define DUMMY_CLOCK_COUNT 80
 #define SIZE_1_BYTE		8
 #define SIZE_5_BYTE		40
@@ -27,17 +27,6 @@
 #define BCR 2'b11
 
 module mmcspi {
-	reg clk_cnt[8] = 0;
-	reg clk_100khz = 0;
-	reg clk_25mhz = 0;
-	reg clk_prev_100khz = 0;
-	reg clk_prev_25mhz = 0;
-	reg clk_prev_m_clock = 0;
-	wire clk_prev;
-	wire clk;
-	func_self falling_edge();
-	func_self rising_edge();
-	reg miso_r = 1;
 	wire miso;
 	proc_name init();
 	proc_name idle();
@@ -57,42 +46,25 @@ module mmcspi {
 	reg arg[32];
 	reg resp[32];
     reg r1state[8];
+	reg recieve_bytes[13] = 0;
 	status_t reg status = 0;
 	types_t reg types = 0;
 
-	clk = if(status.inited) clk_25mhz else clk_100khz;
-	clk_prev = if(status.inited) clk_prev_25mhz else clk_prev_100khz;
-	miso = if(status.inited) MISO else miso_r;
-	if(((((clk_cnt == CLK_100KHZ_COUNT)) && ~clk && ~~clk_prev) && ~status.inited) || (clk && ~clk_prev && status.inited)) {
-		rising_edge();
-	}
-	if(((((clk_cnt == CLK_100KHZ_COUNT)) && ~~clk && ~clk_prev) && ~status.inited) || (~clk && clk_prev && status.inited)) {
-		falling_edge();
-	}
-	/*
-	if(rising_edge) {
-		miso_r := MISO;
-	}
-	*/
-	if((clk_cnt == CLK_100KHZ_COUNT) && ~status.inited) {
-		miso_r := MISO;
-	} else if(status.inited) {
-		miso_r := MISO;
-	}
-	if(clk_cnt == CLK_100KHZ_COUNT) {
-		clk_cnt := 0;
-		clk_100khz := ~clk_100khz;
-		clk_prev_100khz := clk_100khz;
-	} else {
-		clk_cnt++;
-	}
-	clk_25mhz := ~clk_25mhz;
-	clk_prev_25mhz := clk_25mhz;
+	proc_name sync();
+
+	miso = MISO;
 
 	func reset {
 		status.inited := 0;
 		init();
+		sync();
 	}
+
+	proc sync{
+		req_done();
+		finish();
+	}
+
 	proc init {
 		state_name poweron, dummy_clock, recv_cmd0_resp, recv_cmd1_resp, recv_cmd16_resp;
 
@@ -100,11 +72,9 @@ module mmcspi {
 			reg poweron_cnt[16] = 0;
 
 			if(poweron_cnt == TM_1MS_COUNT) {
-				if(rising_edge) {
-					poweron_cnt := 0;
+				poweron_cnt := 0;
 
-					goto dummy_clock;
-				}
+				goto dummy_clock;
 			} else {
 				poweron_cnt++;
 			}
@@ -115,60 +85,54 @@ module mmcspi {
 		state dummy_clock {
 			reg dummy_clock_cnt[7] = 0;
 
-			if(rising_edge) {
-				if(dummy_clock_cnt == DUMMY_CLOCK_COUNT) {
-					dummy_clock_cnt := 0;
+			if(dummy_clock_cnt == DUMMY_CLOCK_COUNT) {
+				dummy_clock_cnt := 0;
 
-					send_cmd(CMD0, R1);
-					goto recv_cmd0_resp;
-				} else {
-					dummy_clock_cnt++;
-				}
+				send_cmd(CMD0, R1);
+				goto recv_cmd0_resp;
+			} else {
+				dummy_clock_cnt++;
 			}
 			CS = HIGH;
 			SCLK = clk;
 			MOSI = HIGH;
 		}
 		state recv_cmd0_resp {
-			if(rising_edge) {
-				if(response_buf[7:0] == 0x01){
-					send_cmd(CMD1, R1);
-					goto recv_cmd1_resp;
-					#ifdef CV
-					#endif
-				}else{
-					send_cmd(CMD0, R1);
-				}
+			if(response_buf[7:0] == 0x01){
+				send_cmd(CMD1, R1);
+				goto recv_cmd1_resp;
+				#ifdef CV
+				#endif
+			}else{
+				send_cmd(CMD0, R1);
 			}
 			CS = HIGH;
 			SCLK = clk;
 			MOSI = HIGH;
 		}
 		state recv_cmd1_resp{
-			if(rising_edge) {
-				if(response_buf[7:0] == 0x00) {
-					send_cmd(CMD16, R1);
-					goto recv_cmd16_resp;
-					#ifdef CV
-					#endif
-				}else{
-					send_cmd(CMD1, R1);
-					#ifdef CV
-					#endif
-				}
+			if(response_buf[7:0] == 0x00) {
+				send_cmd(CMD16, R1);
+				goto recv_cmd16_resp;
+				#ifdef CV
+				#endif
+			}else{
+				send_cmd(CMD1, R1);
+				#ifdef CV
+				#endif
 			}
 			CS = HIGH;
 			SCLK = clk;
 			MOSI = HIGH;
 		}
 		state recv_cmd16_resp {
-			if(rising_edge) {
 
-				goto poweron;
-				idle();
-					#ifdef CV
-					#endif
-			}
+			goto poweron;
+			init_done();
+			idle();
+				#ifdef CV
+				#endif
+
 			CS = HIGH;
 			SCLK = clk;
 			MOSI = HIGH;
@@ -177,18 +141,16 @@ module mmcspi {
 	proc send_cmd {
 		reg cmd_buf_bit_pos[7] = 48;
 
-		if(rising_edge) {
-			if((cmd_buf_bit_pos-1) == 0) {
-				cmd_buf_bit_pos := 48;
-				receive_response(0xffffffffff, response);
-				#ifdef CV
-				if(SW[5]){
-					debug_led_4();
-				}
-				#endif
-			} else {
-				cmd_buf_bit_pos--;
+		if((cmd_buf_bit_pos-1) == 0) {
+			cmd_buf_bit_pos := 48;
+			receive_response(0xffffffffff, response);
+			#ifdef CV
+			if(SW[5]){
+				debug_led_4();
 			}
+			#endif
+		} else {
+			cmd_buf_bit_pos--;
 		}
 		CS = LOW;
 		SCLK = clk;
@@ -201,72 +163,66 @@ module mmcspi {
 		
 		state receive_start_bit {
 			if(miso == LOW) {
-				if(rising_edge) {
-					response_buf := {response_buf[38:0], miso};
-					response_buf_bit_pos++;
-                    any{
-                        (response == R1 || response == R1B): response_size := 8;
-                        response == R2: response_size := 16;
-                        response == R3: response_size := 40;
-                    }
-					goto receive_response_body;
-					#ifdef CV
-					if(SW[5]){
-						debug_led_5();
-					}
-					#endif
+				response_buf := {response_buf[38:0], miso};
+				response_buf_bit_pos++;
+				any{
+					response[1] == 0: response_size := 8; //RES_R1 or RES_R1B
+					response == RES_R2: response_size := 16;
+					response == RES_R3: response_size := 40;
 				}
+				goto receive_response_body;
+				#ifdef CV
+				if(SW[5]){
+					debug_led_5();
+				}
+				#endif
 			}
 		}
 		state receive_response_body {
-			if(rising_edge) {
-				if(response_buf_bit_pos == (response_size-1)) {
-					response_buf_bit_pos := 0;
-                    any{
-                        (response == R1 || response == R1B): r1state := {response_buf[6:0],miso};
-                        response == R2:{
-							r1state := {response_buf[14:7]};
-							resp := {response_buf[6:0],miso};
-						}
-                        response == R3:{
-							r1state := {response_buf[38:31]};
-							resp := {response_buf[30:0],miso};
-						} 
-                    }
-                    if(response == R1B){
-                        goto r1b_busy_wait;
-                    }else if(!status.inited) {
-						init();
-					    goto receive_start_bit;
-					} else {
-						idle();
-					    goto receive_start_bit;
+			if(response_buf_bit_pos == (response_size-1)) {
+				response_buf_bit_pos := 0;
+				any{
+					response[1] == 0: r1state := {response_buf[6:0],miso}; //RES_R1 or RES_R1B
+					response == RES_R2:{
+						r1state := {response_buf[14:7]};
+						resp := {response_buf[6:0],miso};
 					}
-					#ifdef CV
-					if(SW[5]){
-						debug_led_6();
-					}
-					#endif
-				} else {
-					response_buf_bit_pos++;
+					response == RES_R3:{
+						r1state := {response_buf[38:31]};
+						resp := {response_buf[30:0],miso};
+					} 
 				}
-				response_buf := {response_buf[38:0], miso};
+				if(response == RES_R1B){
+					goto r1b_busy_wait;
+				}else if(!status.inited) {
+					init();
+					goto receive_start_bit;
+				} else {
+					idle();
+					goto receive_start_bit;
+				}
+				#ifdef CV
+				if(SW[5]){
+					debug_led_6();
+				}
+				#endif
+			} else {
+				response_buf_bit_pos++;
 			}
+			response_buf := {response_buf[38:0], miso};
 		}
         state r1b_busy_wait {
             reg r1b_busy[8] = 0;
-			if(rising_edge) {
-                if({r1b_busy[6:0],miso} == 0xFF) {
-                    idle();
-                    goto receive_start_bit;
-					#ifdef CV
-					if(SW[5]){
-						debug_led_7();
-					}
-					#endif
-                }
-				r1b_busy := {r1b_busy[6:0], miso};	
+			if({r1b_busy[6:0],miso} == 0xFF) {
+				idle();
+				goto receive_start_bit;
+				#ifdef CV
+				if(SW[5]){
+					debug_led_7();
+				}
+				#endif
 			}
+			r1b_busy := {r1b_busy[6:0], miso};	
         }
 		CS = LOW;
 		SCLK = clk;
@@ -278,21 +234,18 @@ module mmcspi {
 		state_name send_data_packet_start_byte, send_data_packet_data_block, send_data_packet_crc, recv_data_resp;
 		reg start_byte_buf[8] = 0;
 		reg start_byte[8] = 0xfe;
-		reg receive_bytes[16] = 512;
 		reg crc[16] = 0;
 
 		status.inited := HIGH;
 
 		state s0 {
 			reg s0_cnt[8] = 0;
-			/* change 100khz to 25mhz, sync to rising_edge */
-			if(rising_edge) {
-				if(s0_cnt == 0xff) {
-					s0_cnt := 0;
-					goto s1;
-				} else {
-					s0_cnt++;
-				}
+			/* change 100khz to 25mhz*/
+			if(s0_cnt == 0xff) {
+				s0_cnt := 0;
+				goto s1;
+			} else {
+				s0_cnt++;
 			}
 			CS = HIGH;
 			SCLK = LOW;
@@ -314,7 +267,7 @@ module mmcspi {
             }
 		    status.idle := !status.exec;
 			CS = HIGH;
-			SCLK = clk;
+			SCLK = LOW;
 			MOSI = HIGH;
 			#ifdef CV
 			if(SW[5]){
@@ -373,19 +326,17 @@ module mmcspi {
 		state recv_data_packet_crc {
 			reg crc_bit_pos[4] = 0;
 
-			if(rising_edge) {
-				if(crc_bit_pos == (16-1)) {
-					crc_bit_pos := 0;
-					if(cmd == 18){
-						goto recv_data_packet_start_byte;
-					}else{
-						goto send_irq;
-					}
-				} else {
-					crc_bit_pos++;
+			if(crc_bit_pos == (16-1)) {
+				crc_bit_pos := 0;
+				if(cmd == 18){
+					goto recv_data_packet_start_byte;
+				}else{
+					goto send_irq;
 				}
-				crc := {crc[14:0], miso};
+			} else {
+				crc_bit_pos++;
 			}
+			crc := {crc[14:0], miso};
 			CS = LOW;
 			SCLK = clk;
 			MOSI = HIGH;
@@ -397,13 +348,11 @@ module mmcspi {
 			}
 			reg start_byte_send_bit_pos[3] = 7;
 
-			if(rising_edge) {
-				if(start_byte_send_bit_pos == 0) {
-					start_byte_send_bit_pos := 7;
-					goto send_data_packet_data_block;
-				} else {
-					start_byte_send_bit_pos--;
-				}
+			if(start_byte_send_bit_pos == 0) {
+				start_byte_send_bit_pos := 7;
+				goto send_data_packet_data_block;
+			} else {
+				start_byte_send_bit_pos--;
 			}
 			CS = LOW;
 			SCLK = clk;
@@ -440,13 +389,11 @@ module mmcspi {
 		state send_data_packet_crc {
 			reg crc_send_bit_pos[4] = 15;
 			
-			if(rising_edge) {
-				if(crc_send_bit_pos == 0) {
-					crc_send_bit_pos := 15;
-					goto recv_data_resp;
-				} else {
-					crc_send_bit_pos--;
-				}
+			if(crc_send_bit_pos == 0) {
+				crc_send_bit_pos := 15;
+				goto recv_data_resp;
+			} else {
+				crc_send_bit_pos--;
 			}
 			CS = LOW;
 			SCLK = clk;
@@ -456,37 +403,33 @@ module mmcspi {
 		state recv_data_resp {
 			reg data_resp_bit_pos[3] = 7;
 
-			if(rising_edge) {
-				if(data_resp_bit_pos == 0) {
-					data_resp_bit_pos := 7;
-					if({data_resp[6:0],miso} != 0xFF) {
-						if({data_resp[2:0],miso} == ACCEPTED){
-                            if(cmd == 25){
-                                goto send_data_packet_start_byte;
-                            }else{
-							    goto send_irq;
-                            }
+			if(data_resp_bit_pos == 0) {
+				data_resp_bit_pos := 7;
+				if({data_resp[6:0],miso} != 0xFF) {
+					if({data_resp[2:0],miso} == ACCEPTED){
+						if(cmd == 25){
+							goto send_data_packet_start_byte;
 						}else{
-							goto s1;
+							goto send_irq;
 						}
+					}else{
+						goto s1;
 					}
-				} else {
-					data_resp_bit_pos--;
 				}
-				data_resp := {data_resp[6:0], miso};	
+			} else {
+				data_resp_bit_pos--;
 			}
+			data_resp := {data_resp[6:0], miso};	
 			CS = LOW;
 			SCLK = clk;
 			MOSI = HIGH;
 		}
         state send_irq{
-			if(rising_edge){
-				if(status.interrupt_enable){
-					interrupt_req();
-				}
-				status.exec := LOW;
-            	goto s1;
+			if(status.interrupt_enable){
+				interrupt_req();
 			}
+			status.exec := LOW;
+			goto s1;
 			CS = HIGH;
 			SCLK = clk;
 			MOSI = HIGH;
@@ -520,6 +463,7 @@ module mmcspi {
 			(byteen == MEM_BYTE && (read_adrs[1:0] == 2'b10)):	rdata = {0x000000, read_data[23:16]};
 			(byteen == MEM_BYTE && (read_adrs[1:0] == 2'b11)):	rdata = {0x000000, read_data[31:24]};
 		}
+		sync();
 	}
 	func write {
 		variable new_data[32];
