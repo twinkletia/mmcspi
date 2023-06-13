@@ -12,7 +12,7 @@
 #define CMD25_STOP 8'b11111101
 
 module mmcspi_slave {
-	state_name s0, s1, s2, s3, s4, s5, s6, s7, s8, busy;
+	state_name s0, s1, s2, s3, s4, s4_5, s5, s6, s7, s8, busy;
 	reg cmd_buf[48] = -1;
 	reg cmd_buf_bit_pos[6] = 0;
 	func_self rising_edge;
@@ -68,7 +68,7 @@ module mmcspi_slave {
 		wire arg[32];
 		cmd = cmd_buf[45:40];
 		arg = cmd_buf[39:8];
-		_display(" CMD%d 0xARG %h ",cmd,arg);
+		//_display(" CMD%d 0xARG %h ",cmd,arg);
 		if(rising_edge) {
 			any {
 				cmd_buf == CMD0:	{response_buf := 40'(1'b1); response_size := 8-1; goto s3;}
@@ -145,13 +145,24 @@ module mmcspi_slave {
 		if(rising_edge) {
 			if(block_bit_pos == (block_size-1)) {
 				block_bit_pos := 0;
+				goto s4_5;
+			} else {
+				block_bit_pos++;
+			}
+		}
+		MISO = block_data[block_bit_pos];
+	}
+	state s4_5 {
+		if(rising_edge) {
+			if(block_bit_pos == (16-1)) {
+				block_bit_pos := 0;
 				read_op := 0;
 				goto s0;
 			} else {
 				block_bit_pos++;
 			}
 		}
-		MISO = block_data[block_bit_pos];
+		MISO = HIGH;
 	}
 	state s5{	//recv start byte
 		if(rising_edge) {
