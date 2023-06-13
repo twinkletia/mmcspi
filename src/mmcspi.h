@@ -93,7 +93,6 @@ struct types_t
     write[1];
 };
 
-
 #define CMD0 0x40_00_00_00_00_95
 #define CMD1 0x41_00_00_00_00_f9
 /* 512 byte */

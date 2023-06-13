@@ -21,6 +21,7 @@ declare mmcspi_slave
     output tail[32];
     output excnt[4];
     output exclusion[512];
-    func_out erase(head, tail, excnt, exclusion);
+    output erase_group_en;
+    func_out erase(head, tail, excnt, exclusion, erase_group_en);
 }
 #endif

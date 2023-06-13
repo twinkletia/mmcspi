@@ -30,13 +30,17 @@ module mmcspi_slave {
 	reg start_byte_buf[8] = 0;
 	reg csd[128] = 0xb5000150_01ffffff_8dc15ada_4c007a00;//005e0032_5b5a83b1_ffffff80_0a8000ad;
 	reg cid[128] = 0xa91a8000_ace35b0c_42e24c22_ca120ae4;//27504853_44324742_30dac735_00015895;
+	reg scr[64] = 0x00000080_0001a440; //0x2258000_01000000
 	reg ocr[32] = 0x80ff8000;
+	reg ssr[128] = 0x0000D500_4009C0C0_14000000_00000000 ;//00000000 00000028 03039002 00ab0000 before 384bit is 0
 	reg r1resp[8] = 0x00;
 	reg r2resp[8] = 0x00;
 	reg busy_flag = 0;
+	reg acmd_flag = 0;
 	reg erase_head[32] = 0;
 	reg erase_tail[32] = 0;
 	reg exception_ptr[4] = 0;
+	reg group_flag = 0;
 	mem erase_exception[16][32];
 
 	clk_prev := SCLK;
@@ -68,7 +72,7 @@ module mmcspi_slave {
 		wire arg[32];
 		cmd = cmd_buf[45:40];
 		arg = cmd_buf[39:8];
-		//_display(" CMD%d 0xARG %h ",cmd,arg);
+		_display(" CMD%d 0xARG %h ",cmd,arg);
 		if(rising_edge) {
 			any {
 				cmd_buf == CMD0:	{response_buf := 40'(1'b1); response_size := 8-1; goto s3;}
@@ -87,7 +91,18 @@ module mmcspi_slave {
 					block_data := 4096'(cid); 
 					block_size := 128; goto s3;}	//read cid
 				cmd == 12:{}	//force stop multi read
-				cmd == 13:{response_buf := 40'({r1resp,r2resp}); response_size := 16-1; goto s3;}	//read card status
+				cmd == 13:{
+					if(acmd_flag){
+						acmd_flag := 0;
+						response_buf := 40'({r1resp,r2resp,start_byte}); 
+						response_size := 24-1; 
+						read_op := 1; 
+						block_data := 4096'(ssr); 
+						block_size := 512; goto s3;
+					}else{
+						response_buf := 40'({r1resp,r2resp}); response_size := 16-1; goto s3;
+					}
+				}	//read card status
 				cmd == 17:{
 					response_buf := 40'({r1resp,start_byte}); response_size := 16-1;	//[15:8]00 = recv_cmd17_resp [7:0]fe = master.start_byte
 				 	read_op := 1; block_bit_pos := 0;
@@ -102,17 +117,33 @@ module mmcspi_slave {
 				   	block_size := 4096;
 				    goto s3;}	//write single block
 				cmd == 25:{}	//write multi block
-				cmd == 32:{response_buf := 40'(r1resp); response_size := 8-1; erase_head := arg; goto s3;}	//select erase head
-				cmd == 33:{response_buf := 40'(r1resp); response_size := 8-1; erase_tail := arg; goto s3;}	//select erase tail
-				cmd == 34:{response_buf := 40'(r1resp); response_size := 8-1; erase_exception[exception_ptr] := arg; exception_ptr++; goto s3;}	//select erase exception block
+				cmd == 32:{response_buf := 40'(r1resp); response_size := 8-1; erase_head := arg; _display("\n ERASE START ADDR %h ",arg); group_flag := 0; goto s3;}	//select erase head
+				cmd == 33:{response_buf := 40'(r1resp); response_size := 8-1; erase_tail := arg; _display("\n ERASE END ADDR %h ",arg); goto s3;}	//select erase tail
+				cmd == 34:{response_buf := 40'(r1resp); response_size := 8-1; erase_exception[exception_ptr] := arg; exception_ptr++;  _display("\n ERASE EXCEPTION %h ",arg); goto s3;}	//select erase exception block
+				cmd == 35:{response_buf := 40'(r1resp); response_size := 8-1; erase_head := arg; _display("\n ERASE GROUP START ADDR %h ",arg); group_flag := 1; goto s3;}	//select erase group head
+				cmd == 36:{response_buf := 40'(r1resp); response_size := 8-1; erase_tail := arg; _display("\n ERASE GROUP END ADDR %h ",arg); goto s3;}	//select erase group tail
+				cmd == 37:{response_buf := 40'(r1resp); response_size := 8-1; erase_exception[exception_ptr] := arg; exception_ptr++;  _display("\n ERASE GROUP EXCEPTION %h ",arg); goto s3;}	//select erase group exception block
 				cmd == 38:{response_buf := 40'(r1resp); response_size := 8-1; busy_flag := 1;
 					erase(erase_head, erase_tail, exception_ptr, 
-					{erase_exception[0], erase_exception[1], erase_exception[2], erase_exception[3], 
-					erase_exception[4], erase_exception[5], erase_exception[6], erase_exception[7], 
-					erase_exception[8], erase_exception[9], erase_exception[10], erase_exception[11], 
-					erase_exception[12], erase_exception[13], erase_exception[14], erase_exception[15]});
+					{erase_exception[15], erase_exception[14], erase_exception[13], erase_exception[12], 
+					erase_exception[11], erase_exception[10], erase_exception[9], erase_exception[8], 
+					erase_exception[7], erase_exception[6], erase_exception[5], erase_exception[4], 
+					erase_exception[3], erase_exception[2], erase_exception[1], erase_exception[0]},group_flag);
 					exception_ptr := 0;
 					goto s3;}	//erase
+				cmd == 51:{
+					acmd_flag := 0;
+					response_buf := 40'({r1resp,start_byte}); 
+					response_size := 16-1; 
+					read_op := 1; 
+					block_data := 4096'(scr); 
+					block_size := 64; goto s3;}	//read cid
+				cmd == 55:{
+					response_buf := 40'({r1resp}); 
+					response_size := 8-1;
+					acmd_flag := 1;
+					 goto s3;
+					 }	//read cid
 				cmd == 58:{response_buf := {r1resp,ocr}; response_size := 40-1; goto s3;}	//read ocr
 				else: {response_buf := 40'(0x04); response_size := 8-1; goto s3;}	//unsupported command(response illegal cmd bit)
 			}
@@ -227,6 +258,10 @@ module mmcspi_slave {
 				busy_cnt++;
 			}
 		}
-		MISO = LOW;
+		if(busy_cnt >= 24){
+			MISO = HIGH;
+		}else{
+			MISO = LOW;
+		}
 	}
 }
