@@ -1,0 +1,146 @@
+#include "mmcspi.h"
+#include "mmc_interface.h"
+
+#define CLK_100KHZ_COUNT 250
+#define CLK_25MHZ_COUNT 0
+#define READ 2'b01
+#define WRITE 2'b10
+#define RESET 2'b11
+
+module mmc_interface{
+
+    reg clk_cnt[8] = 0;
+    reg clk;
+    reg clk_slave;
+    reg rw_req_state;
+    reg intr_req_state;
+    reg init_state;
+    reg clk_threshold[8] = 0;
+	func_self falling_edge();
+	func_self rising_edge();
+    reg req[2] = 2'b00;
+    reg adrs[12];
+    reg byteena[3];
+    reg data[32];
+    proc_name send_req(req,adrs,byteena,data);
+
+    mmcspi rv32x_mmcspi;
+    
+    rv32x_mmcspi.m_clock = clk;
+    rv32x_mmcspi.clk = clk;
+    //clk_slave := rv32x_mmcspi.SCLK;
+    //SCLK = clk_slave;
+    SCLK = rv32x_mmcspi.SCLK;
+	MOSI = rv32x_mmcspi.MOSI;
+	CS = rv32x_mmcspi.CS;
+	rv32x_mmcspi.MISO = MISO;
+	rdata = rv32x_mmcspi.rdata;
+
+    func reset{
+        clk_threshold := CLK_100KHZ_COUNT;
+        send_req(RESET,0,0,0);
+    }
+
+    intr_req_state := rv32x_mmcspi.interrupt_req;
+    init_state := rv32x_mmcspi.init_done;
+
+	if(clk_cnt == clk_threshold) {
+		clk_cnt := 0;
+		clk := ~clk;
+        if(clk){
+            falling_edge();
+        }else{
+            rising_edge();
+        }
+	} else {
+		clk_cnt++;
+	}
+
+    func rv32x_mmcspi.init_done{
+        if(!init_state){
+            clk_threshold := CLK_25MHZ_COUNT; 
+        }
+    }
+
+    func read{
+        rw_req_state := 1;
+        send_req(READ,read_adrs,byteen,0);
+    }
+
+    func write{
+        rw_req_state := 1;
+        send_req(WRITE,write_adrs,byteen,wdata);
+    }
+
+    proc send_req{
+        if(!rv32x_mmcspi.req_done){
+            any{
+                req == READ:    rv32x_mmcspi.read(adrs,byteena);
+                req == WRITE:   rv32x_mmcspi.write(adrs,byteena,data);
+                req == RESET:   rv32x_mmcspi.reset();
+        }
+        }
+    }
+
+    func rv32x_mmcspi.req_done{
+        send_req.finish();
+    }
+
+    func rv32x_mmcspi.valid{
+        if(rw_req_state){
+            valid();
+        }
+        rw_req_state := 0;
+    }
+
+    func rv32x_mmcspi.interrupt_req{
+        if(!intr_req_state){
+            interrupt_req();
+        }
+    }
+
+    #ifdef CV
+	rv32x_mmcspi.SW = SW;
+
+	func rv32x_mmcspi.debug_led_1{
+		debug_led_1();
+	}	
+	func rv32x_mmcspi.debug_led_2{
+		debug_led_2();
+	}	
+	func rv32x_mmcspi.debug_led_3{
+		debug_led_3();
+	}	
+	func rv32x_mmcspi.debug_led_4{
+		debug_led_4();
+	}	
+	func rv32x_mmcspi.debug_led_5{
+		debug_led_5();
+	}
+	func rv32x_mmcspi.debug_led_6{
+		debug_led_6();
+	}
+	func rv32x_mmcspi.debug_led_7{
+		debug_led_7();
+	}
+	func rv32x_mmcspi.debug_led_8{
+		debug_led_8();
+	}
+	func rv32x_mmcspi.debug_pc_led{
+		debug_pc_led(rv32x_mmcspi.pc_led);
+	}
+	func rv32x_mmcspi.debug_sseg_h8{
+		//debug_sseg_h8(rv32x_mmcspi.sseg_h8);
+	}
+	func rv32x_mmcspi.debug_sseg_l16{
+		//debug_sseg_l16(rv32x_mmcspi.sseg_l16);
+	}
+	func rv32x_mmcspi.debug_sseg_l12{
+		debug_sseg_l12(rv32x_mmcspi.sseg_l12);
+	}
+	func rv32x_mmcspi.debug_sseg_h12{
+		debug_sseg_h12(rv32x_mmcspi.sseg_h12);
+	}
+    
+    #endif
+}
