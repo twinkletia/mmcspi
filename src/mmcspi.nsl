@@ -326,11 +326,7 @@ module mmcspi {
 
 			if(crc_bit_pos == (16-1)) {
 				crc_bit_pos := 0;
-				if(cmd == 18){
-					goto recv_data_packet_start_byte;
-				}else{
-					goto send_irq;
-				}
+				goto send_irq;
 			} else {
 				crc_bit_pos++;
 			}
@@ -345,12 +341,13 @@ module mmcspi {
 			
 			if(r1state != 0x00){
 				goto send_irq;
-			}
-			if(start_byte_send_bit_pos == 0) {
-				start_byte_send_bit_pos := 7;
-				goto send_data_packet_data_block;
-			} else {
-				start_byte_send_bit_pos--;
+			}else if(miso == HIGH){//DO == HIGH is not busy
+				if(start_byte_send_bit_pos == 0) {
+					start_byte_send_bit_pos := 7;
+					goto send_data_packet_data_block;
+				} else {
+					start_byte_send_bit_pos--;
+				}
 			}
 			CS = LOW;
 			SCLK = clk;
@@ -403,13 +400,7 @@ module mmcspi {
 				data_resp_bit_pos := 7;
 				if({data_resp[6:0],miso} != 0xFF) {
 					if({data_resp[2:0],miso} == ACCEPTED){
-						if(cmd == 25){
-							goto send_data_packet_start_byte;
-						}else{
 							goto send_irq;
-						}
-					}else{
-						goto s1;
 					}
 				}
 			} else {
