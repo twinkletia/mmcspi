@@ -5,7 +5,11 @@
 #define MEM_BYTE        3'b000
 
 #define CLK_100KHZ_COUNT 250
-#define TM_1MS_COUNT	100
+#ifndef CV
+#define TM_1MS_COUNT	2
+#else
+#define TM_1MS_COUNT	10000
+#endif
 #define DUMMY_CLOCK_COUNT 80
 #define SIZE_1_BYTE		8
 #define SIZE_5_BYTE		40
@@ -474,7 +478,13 @@ module mmcspi {
 			}
 			write_adrs == 12'(0x200): {status.interrupt_enable := wdata[3]; status.exec := wdata[2];}
 			write_adrs == 12'(0x20c): {cmd := wdata[5:0];}
-			write_adrs == 12'(0x210): {arg := wdata;}
+			write_adrs == 12'(0x210): {arg := wdata;
+		#ifdef CV
+			if(SW[5]){
+			debug_sseg_h12(wdata[31:20]);
+			debug_sseg_l12(wdata[19:8]);
+			}
+		#endif}
 			write_adrs == 12'(0x214): {types := wdata;}
 			write_adrs <= 12'(0x214): {valid();}
 			else: store_amo_access_fault();
