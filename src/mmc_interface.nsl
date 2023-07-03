@@ -5,7 +5,6 @@
 #define CLK_25MHZ_COUNT 0
 #define READ 2'b01
 #define WRITE 2'b10
-#define RESET 2'b11
 
 module mmc_interface{
 
@@ -14,7 +13,7 @@ module mmc_interface{
     reg clk_slave;
     reg rw_req_state;
     reg intr_req_state;
-    reg init_state;
+    reg init_state = 0;
     reg clk_threshold[8] = 0;
 	func_self falling_edge();
 	func_self rising_edge();
@@ -22,6 +21,7 @@ module mmc_interface{
     reg adrs[12];
     reg byteena[3];
     reg data[32];
+    proc_name reset_req();
     proc_name send_req(req,adrs,byteena,data);
 
     mmcspi rv32x_mmcspi;
@@ -38,11 +38,13 @@ module mmc_interface{
 
     func reset{
         clk_threshold := CLK_100KHZ_COUNT;
-        send_req(RESET,0,0,0);
+        reset_req();
     }
 
     intr_req_state := rv32x_mmcspi.interrupt_req;
-    init_state := rv32x_mmcspi.init_done;
+    if(!init_state){
+        init_state := rv32x_mmcspi.init_done;
+    }
 
 	if(clk_cnt == clk_threshold) {
 		clk_cnt := 0;
@@ -57,9 +59,7 @@ module mmc_interface{
 	}
 
     func rv32x_mmcspi.init_done{
-        if(!init_state){
             clk_threshold := CLK_25MHZ_COUNT; 
-        }
     }
 
     func read{
@@ -73,17 +73,23 @@ module mmc_interface{
     }
 
     proc send_req{
-        if(!rv32x_mmcspi.req_done){
+        if(!rv32x_mmcspi.req_done && init_state){
             any{
                 req == READ:    rv32x_mmcspi.read(adrs,byteena);
                 req == WRITE:   rv32x_mmcspi.write(adrs,byteena,data);
-                req == RESET:   rv32x_mmcspi.reset();
+            }
         }
-        }
+    }
+
+    proc reset_req{
+         if(!rv32x_mmcspi.req_done){
+             rv32x_mmcspi.reset();
+         }  
     }
 
     func rv32x_mmcspi.req_done{
         send_req.finish();
+        reset_req.finish();
     }
 
     func rv32x_mmcspi.valid{
