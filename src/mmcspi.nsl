@@ -81,9 +81,9 @@ module mmcspi {
 			} else {
 				poweron_cnt++;
 			}
-			CS = LOW;
+			CS = HIGH;
 			SCLK = LOW;
-			MOSI = LOW;
+			MOSI = HIGH;
 		}
 		state dummy_clock {
 			reg dummy_clock_cnt[7] = 0;
@@ -234,7 +234,7 @@ module mmcspi {
 	proc idle {
 		state_name s0, s1, s2, send_irq;
 		state_name recv_data_packet_start_byte, recv_data_packet_data_block, recv_data_packet_crc;
-		state_name send_data_packet_start_byte, send_data_packet_data_block, send_data_packet_crc, recv_data_resp;
+		state_name send_data_packet_start_byte, send_data_packet_data_block, send_data_packet_crc, recv_data_resp, write_busy_wait;
 		reg start_byte_buf[8] = 0;
 		reg start_byte[8] = 0xfe;
 		reg crc[16] = 0;
@@ -345,7 +345,7 @@ module mmcspi {
 			
 			if(r1state != 0x00){
 				goto send_irq;
-			}else if(miso == HIGH){//DO == HIGH is not busy
+			}else{
 				if(start_byte_send_bit_pos == 0) {
 					start_byte_send_bit_pos := 7;
 					goto send_data_packet_data_block;
@@ -361,20 +361,20 @@ module mmcspi {
 		state send_data_packet_data_block {
 			//reg write_data_block_bit_pos[12] = 4095;
 			reg write_data_column[7] = 0;
-			reg write_data_row[5] = 0;
+			reg write_data_row[5] = 31;
 			wire sending_word[32];
 
-			if(write_data_column == (128-1) && write_data_row == (32-1)) {
+			if(write_data_column == (128-1) && write_data_row == 0) {
 				//write_data_block_bit_pos := 4095;
 				write_data_column := 0;
-				write_data_row := 0;
+				write_data_row := 31;
 				goto send_data_packet_crc;
-			} else if(write_data_row != (32-1)){
+			} else if(write_data_row != 0){
 				//write_data_block_bit_pos--;
-				write_data_row++;
+				write_data_row--;
 			} else {
 				write_data_column++;
-				write_data_row := 0;
+				write_data_row := 31;
 			}
 			sending_word = write_data_block[write_data_column];
 			CS = LOW;
@@ -402,15 +402,21 @@ module mmcspi {
 
 			if(data_resp_bit_pos == 0) {
 				data_resp_bit_pos := 7;
-				if({data_resp[6:0],miso} != 0xFF) {
-					if({data_resp[2:0],miso} == ACCEPTED){
-							goto send_irq;
-					}
+				if({data_resp[2:0],miso} == ACCEPTED){
+						goto write_busy_wait;
 				}
 			} else {
 				data_resp_bit_pos--;
 			}
 			data_resp := {data_resp[6:0], miso};	
+			CS = LOW;
+			SCLK = clk;
+			MOSI = HIGH;
+		}
+		state write_busy_wait {
+			if(miso != LOW){
+				goto send_irq;
+			}
 			CS = LOW;
 			SCLK = clk;
 			MOSI = HIGH;
