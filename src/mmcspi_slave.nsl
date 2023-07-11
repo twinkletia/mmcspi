@@ -12,12 +12,10 @@
 #define CMD25_STOP 8'b11111101
 
 module mmcspi_slave {
-	state_name s0, s1, s2, s3, s4, s4_5, s5, s6, s7, s8, busy;
+	state_name s1, s2, s3, s4, s4_5, s5, s6, s7, s8, busy;
 	reg cmd_buf[48] = -1;
 	reg cmd_buf_bit_pos[6] = 0;
-	func_self rising_edge;
-	reg clk_prev = 0;
-	reg mosi = 1;
+	reg mosi;
 	reg response_buf[40] = 0;
 	reg response_buf_bit_pos[8] = 0;
 	reg response_size[8] = 0;
@@ -43,28 +41,16 @@ module mmcspi_slave {
 	reg group_flag = 0;
 	mem erase_exception[16][32];
 
-	clk_prev := SCLK;
+	mosi := MOSI;
 	
-	if(~clk_prev && SCLK) {
-		rising_edge();
-		mosi := MOSI;
-	}
-	state s0 {
-		if((CS == LOW) && rising_edge) {
-			goto s1;
-		}
-		MISO = HIGH;
-	}
-	state s1 {
-		if(rising_edge) {
+	state s1 if(CS == LOW){
 			if(cmd_buf_bit_pos == 48-1) {
 				cmd_buf_bit_pos := 0;
 				goto s2;
 			} else {
 				cmd_buf_bit_pos++;
 			}
-			cmd_buf := {cmd_buf[46:0], mosi};
-		}
+			cmd_buf := {cmd_buf[46:0], MOSI};
 		MISO = HIGH;
 	}
 	state s2 {
@@ -72,8 +58,7 @@ module mmcspi_slave {
 		wire arg[32];
 		cmd = cmd_buf[45:40];
 		arg = cmd_buf[39:8];
-		_display(" CMD%d 0xARG %h ",cmd,arg);
-		if(rising_edge) {
+		//_display(" CMD%d 0xARG %h ",cmd,arg);
 			any {
 				cmd_buf == CMD0:	{response_buf := 40'(1'b1); response_size := 8-1; goto s3;}
 				cmd_buf == CMD1:	{response_buf := 40'(1'b0); response_size := 8-1; goto s3;}
@@ -147,14 +132,12 @@ module mmcspi_slave {
 				cmd == 58:{response_buf := {r1resp,ocr}; response_size := 40-1; goto s3;}	//read ocr
 				else: {response_buf := 40'(0x04); response_size := 8-1; goto s3;}	//unsupported command(response illegal cmd bit)
 			}
-		}
 		MISO = HIGH;
 	}
 	func block_data_valid {
 		block_data := read_block_data;
 	}
 	state s3 {
-		if(rising_edge) {
 			if(response_buf_bit_pos == response_size) {
 				response_buf_bit_pos := 0;
 				if(read_op) {
@@ -164,50 +147,42 @@ module mmcspi_slave {
 				}else if(busy_flag){
 					goto busy;
 				}else {
-					goto s0;
+					goto s1;
 				}
 			} else {
 				response_buf_bit_pos++;
 			}
-		}
 		MISO = response_buf[response_size-response_buf_bit_pos];
 	}
 	state s4 {
-		if(rising_edge) {
 			if(block_bit_pos == (block_size-1)) {
 				block_bit_pos := 0;
 				goto s4_5;
 			} else {
 				block_bit_pos++;
 			}
-		}
 		MISO = block_data[block_bit_pos];
 	}
 	state s4_5 {
-		if(rising_edge) {
 			if(block_bit_pos == (16-1)) {
 				block_bit_pos := 0;
 				read_op := 0;
-				goto s0;
+				goto s1;
 			} else {
 				block_bit_pos++;
 			}
-		}
 		MISO = HIGH;
 	}
 	state s5{	//recv start byte
-		if(rising_edge) {
-				if({start_byte_buf[6:0], MOSI} == start_byte) {
+				if({start_byte_buf[6:0], mosi} == start_byte) {
 					start_byte_buf := 0;
 					goto s6;
 				} else {
 					start_byte_buf := {start_byte_buf[6:0], mosi};
 				}
-			}
 		MISO = HIGH;
 	}
 	state s6{	//send block data
-			if(rising_edge) {
 				if(block_bit_pos == (4096-1)) {
 					//valid({data_block[4094:0], miso});
 					block_bit_pos := 0;
@@ -216,13 +191,11 @@ module mmcspi_slave {
 					block_bit_pos++;
 				}
 				block_data := {block_data[4094:0], mosi};
-			}
 		MISO = HIGH;
 	}
 	state s7{	//recv crc
 		reg crc_bit_pos[4] = 0;
 
-			if(rising_edge) {
 				if(crc_bit_pos == (16-1)) {
 					crc_bit_pos := 0;
 					goto s8;
@@ -230,34 +203,29 @@ module mmcspi_slave {
 					crc_bit_pos++;
 				}
 				//crc := {crc[14:0], miso};
-			}
 		MISO = HIGH;
 	}
 	state s8{	//send data resp
 		reg write_response[8] = 0x05;
-		if(rising_edge) {
 			if(response_buf_bit_pos == 7) {
 				response_buf_bit_pos := 0;
 				write_op := 0;
 				write(cmd_buf[39:8], block_data);
-				goto s0;
+				goto s1;
 			} else {
 				response_buf_bit_pos++;
 			}
-		}
 		MISO = write_response[response_size-response_buf_bit_pos];//response_buf[response_size-response_buf_bit_pos];
 	}
 	state busy{
 		reg busy_cnt[5] = 0;
-		if(rising_edge) {
 			if(busy_cnt == 31) {
 				busy_cnt := 0;
 				busy_flag := 0;
-				goto s0;
+				goto s1;
 			} else {
 				busy_cnt++;
 			}
-		}
 		if(busy_cnt >= 24){
 			MISO = HIGH;
 		}else{
