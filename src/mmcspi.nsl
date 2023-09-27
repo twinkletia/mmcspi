@@ -104,6 +104,8 @@ module mmcspi {
 			if(response_buf[7:0] == 0x01){
 				send_cmd(CMD1, R1);
 				goto recv_cmd1_resp;
+				#ifdef CV
+				#endif
 			}else{
 				send_cmd(CMD0, R1);
 			}
@@ -115,8 +117,12 @@ module mmcspi {
 			if(response_buf[7:0] == 0x00) {
 				send_cmd(CMD16, R1);
 				goto recv_cmd16_resp;
+				#ifdef CV
+				#endif
 			}else{
 				send_cmd(CMD1, R1);
+				#ifdef CV
+				#endif
 			}
 			CS = HIGH;
 			SCLK = clk;
@@ -127,6 +133,9 @@ module mmcspi {
 			goto poweron;
 			init_done();
 			idle();
+				#ifdef CV
+				#endif
+
 			CS = HIGH;
 			SCLK = clk;
 			MOSI = HIGH;
@@ -138,6 +147,11 @@ module mmcspi {
 		if((cmd_buf_bit_pos-1) == 0) {
 			cmd_buf_bit_pos := 48;
 			receive_response(0xffffffffff, response);
+			#ifdef CV
+			if(SW[5]){
+				debug_led_4();
+			}
+			#endif
 		} else {
 			cmd_buf_bit_pos--;
 		}
@@ -160,6 +174,11 @@ module mmcspi {
 					response == R3: response_size := 40;
 				}
 				goto receive_response_body;
+				#ifdef CV
+				if(SW[5]){
+					debug_led_5();
+				}
+				#endif
 			}
 		}
 		state receive_response_body {
@@ -185,6 +204,11 @@ module mmcspi {
 					idle();
 					goto receive_start_bit;
 				}
+				#ifdef CV
+				if(SW[5]){
+					debug_led_6();
+				}
+				#endif
 			} else {
 				response_buf_bit_pos++;
 			}
@@ -195,6 +219,11 @@ module mmcspi {
 			if({r1b_busy[6:0],miso} == 0xFF) {
 				idle();
 				goto receive_start_bit;
+				#ifdef CV
+				if(SW[5]){
+					debug_led_7();
+				}
+				#endif
 			}
 			r1b_busy := {r1b_busy[6:0], miso};	
         }
@@ -243,6 +272,15 @@ module mmcspi {
 			CS = HIGH;
 			SCLK = LOW;
 			MOSI = HIGH;
+			#ifdef CV
+			if(SW[5]){
+				any{
+					status.inited: debug_led_1();
+					status.idle: debug_led_2();
+					status.exec: debug_led_3();
+				}
+			}
+			#endif
 		}
 		state recv_data_packet_start_byte {
 			if(r1state != 0x00){
@@ -446,7 +484,13 @@ module mmcspi {
 			}
 			write_adrs == 12'(0x200): {status.interrupt_enable := wdata[3]; status.exec := wdata[2];}
 			write_adrs == 12'(0x20c): {cmd := wdata[5:0];}
-			write_adrs == 12'(0x210): {arg := wdata;}
+			write_adrs == 12'(0x210): {arg := wdata;
+		#ifdef CV
+			if(SW[5]){
+			debug_sseg_h12(wdata[31:20]);
+			debug_sseg_l12(wdata[19:8]);
+			}
+		#endif}
 			write_adrs == 12'(0x214): {types := wdata;}
 			write_adrs <= 12'(0x214): {valid();}
 			else: store_amo_access_fault();
