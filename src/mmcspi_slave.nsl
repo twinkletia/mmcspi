@@ -12,10 +12,9 @@
 #define CMD25_STOP 8'b11111101
 
 module mmcspi_slave {
-	state_name s1, s2, s3, s4, s4_5, s5, s6, s7, s8, busy;
+	state_name s1, s2, s3, s4, s4_5, s5, s6, s7, s8, s9, busy;
 	reg cmd_buf[48] = -1;
 	reg cmd_buf_bit_pos[6] = 0;
-	reg mosi;
 	reg response_buf[40] = 0;
 	reg response_buf_bit_pos[8] = 0;
 	reg response_size[8] = 0;
@@ -40,8 +39,6 @@ module mmcspi_slave {
 	reg exception_ptr[4] = 0;
 	reg group_flag = 0;
 	mem erase_exception[16][32];
-
-	mosi := MOSI;
 	
 	state s1 if(CS == LOW){
 			if(cmd_buf_bit_pos == 48-1) {
@@ -174,11 +171,11 @@ module mmcspi_slave {
 		MISO = HIGH;
 	}
 	state s5{	//recv start byte
-				if({start_byte_buf[6:0], mosi} == start_byte) {
+				if({start_byte_buf[6:0], MOSI} == start_byte) {
 					start_byte_buf := 0;
 					goto s6;
 				} else {
-					start_byte_buf := {start_byte_buf[6:0], mosi};
+					start_byte_buf := {start_byte_buf[6:0], MOSI};
 				}
 		MISO = HIGH;
 	}
@@ -190,7 +187,7 @@ module mmcspi_slave {
 				} else {
 					block_bit_pos++;
 				}
-				block_data := {block_data[4094:0], mosi};
+				block_data := {block_data[4094:0], MOSI};
 		MISO = HIGH;
 	}
 	state s7{	//recv crc
@@ -209,13 +206,17 @@ module mmcspi_slave {
 		reg write_response[8] = 0x05;
 			if(response_buf_bit_pos == 7) {
 				response_buf_bit_pos := 0;
-				write_op := 0;
-				write(cmd_buf[39:8], block_data);
-				goto s1;
+				goto s9;
 			} else {
 				response_buf_bit_pos++;
 			}
 		MISO = write_response[response_size-response_buf_bit_pos];//response_buf[response_size-response_buf_bit_pos];
+	}
+	state s9{	//write busy wait
+		write_op := 0;
+		write(cmd_buf[39:8], block_data);
+		goto s1;
+		MISO = HIGH;	//not busy
 	}
 	state busy{
 		reg busy_cnt[5] = 0;
