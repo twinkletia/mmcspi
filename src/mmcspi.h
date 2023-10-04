@@ -32,10 +32,6 @@ declare mmcspi
     func_out store_amo_access_fault();
     func_out interrupt_req();
     func_out finish_init();
-#ifdef DEBUG
-    output debugstatus[32];
-    func_out debug_status(debugstatus);
-#endif
 #ifdef CV
     input SW[10];
     output pc_led[10];
