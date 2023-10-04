@@ -4,6 +4,8 @@ declare mmc_interface
     input MISO;
     output MOSI;
     output SCLK;
+    input clk100kHz;
+    input clk25MHz;
 
     func_in reset();
     input read_adrs[12];

@@ -1,20 +1,17 @@
 #include "mmcspi.h"
 #include "mmc_interface.h"
+#include "ASYNCRX.h"
+#include "ASYNCTX.h"
 
-#define CLK_100KHZ_COUNT 250
-#define CLK_25MHZ_COUNT 0
 #define READ 2'b01
 #define WRITE 2'b10
+#define RESET 2'b11
 
 module mmc_interface{
 
-    reg clk_cnt[8] = 0;
     reg clk;
-    reg clk_slave;
-    reg rw_req_state;
-    reg intr_req_state;
-    reg init_state = 0;
-    reg clk_threshold[8] = 0;
+    reg inited = 0;
+    reg req_flag;
 	func_self falling_edge();
 	func_self rising_edge();
     reg req[2] = 2'b00;
@@ -25,9 +22,12 @@ module mmc_interface{
     proc_name send_req(req,adrs,byteena,data);
 
     mmcspi rv32x_mmcspi;
+	ASYNCTX tx;
+	ASYNCRX rx;
     
-    rv32x_mmcspi.m_clock = clk;
-    rv32x_mmcspi.clk = clk;
+
+    rv32x_mmcspi.m_clock = if(!inited) clk100kHz else clk25MHz;
+    rv32x_mmcspi.clk = if(!inited) clk100kHz else clk25MHz;
     //clk_slave := rv32x_mmcspi.SCLK;
     //SCLK = clk_slave;
     SCLK = rv32x_mmcspi.SCLK;
@@ -35,75 +35,48 @@ module mmc_interface{
 	CS = rv32x_mmcspi.CS;
 	rv32x_mmcspi.MISO = MISO;
 	rdata = rv32x_mmcspi.rdata;
+	tx.aTxIn = rv32x_mmcspi.rxout;
+	rv32x_mmcspi.rxin = tx.aTxOut;
+	rx.aRxIn = rv32x_mmcspi.txout;
+	rv32x_mmcspi.txin = rx.aRxOut;
 
     func reset{
-        clk_threshold := CLK_100KHZ_COUNT;
-        reset_req();
-    }
-
-    intr_req_state := rv32x_mmcspi.interrupt_req;
-    if(!init_state){
-        init_state := rv32x_mmcspi.init_done;
-    }
-
-	if(clk_cnt == clk_threshold) {
-		clk_cnt := 0;
-		clk := ~clk;
-        if(clk){
-            falling_edge();
-        }else{
-            rising_edge();
-        }
-	} else {
-		clk_cnt++;
-	}
-
-    func rv32x_mmcspi.init_done{
-            clk_threshold := CLK_25MHZ_COUNT; 
+        if(!tx.aTxAck) send_req(RESET,0,0,0);
     }
 
     func read{
-        rw_req_state := 1;
-        send_req(READ,read_adrs,byteen,0);
+        if(!tx.aTxAck) send_req(READ,read_adrs,byteen,0);
     }
 
     func write{
-        rw_req_state := 1;
-        send_req(WRITE,write_adrs,byteen,wdata);
+        if(!tx.aTxAck) send_req(WRITE,write_adrs,byteen,wdata);
     }
 
     proc send_req{
-        if(!rv32x_mmcspi.req_done && init_state){
-            any{
-                req == READ:    rv32x_mmcspi.read(adrs,byteena);
-                req == WRITE:   rv32x_mmcspi.write(adrs,byteena,data);
+        req_flag := 1;
+        if(!req_flag) tx.aTxReq();
+        any{
+            req == RESET:   rv32x_mmcspi.reset();
+            req == READ:    rv32x_mmcspi.read(adrs,byteena);
+            req == WRITE:   rv32x_mmcspi.write(adrs,byteena,data);
+        }
+    }
+
+	func tx.aTxAck seq{
+            {
+                send_req.finish();
+                if(req != RESET) valid();
             }
-        }
-    }
-
-    proc reset_req{
-         if(!rv32x_mmcspi.req_done){
-             rv32x_mmcspi.reset();
-         }  
-    }
-
-    func rv32x_mmcspi.req_done{
-        send_req.finish();
-        reset_req.finish();
-    }
-
-    func rv32x_mmcspi.valid{
-        if(rw_req_state){
-            valid();
-        }
-        rw_req_state := 0;
-    }
-
-    func rv32x_mmcspi.interrupt_req{
-        if(!intr_req_state){
-            interrupt_req();
-        }
-    }
+            req_flag := 0;
+	}
+    
+	func rx.aRxReq{ 
+        any{
+            rv32x_mmcspi.finish_init: inited := 1;	
+            rv32x_mmcspi.interrupt_req: interrupt_req();
+        }   	
+        rx.aRxAck();
+	}
 
     #ifdef CV
 	rv32x_mmcspi.SW = SW;

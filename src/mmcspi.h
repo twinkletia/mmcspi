@@ -14,6 +14,11 @@ declare mmcspi
     output MOSI;
     output SCLK;
 
+    input rxin;
+    output rxout;
+    input txin;
+    output txout;
+
     func_in reset();
     input read_adrs[12];
     input write_adrs[12];
@@ -26,8 +31,7 @@ declare mmcspi
     func_out load_access_fault();
     func_out store_amo_access_fault();
     func_out interrupt_req();
-    func_out init_done();
-    func_out req_done();
+    func_out finish_init();
 #ifdef DEBUG
     output debugstatus[32];
     func_out debug_status(debugstatus);

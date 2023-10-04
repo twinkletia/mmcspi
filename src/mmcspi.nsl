@@ -1,4 +1,6 @@
 #include "mmcspi.h"
+#include "ASYNCRX.h"
+#include "ASYNCTX.h"
 
 #define MEM_WORD        3'b010
 #define MEM_HALFWORD    3'b001
@@ -30,6 +32,9 @@
 #define BC 2'b10
 #define BCR 2'b11
 
+#define INIT_DONE 1'b00
+#define INTR 1'b01
+
 module mmcspi {
 	wire miso;
 	proc_name init();
@@ -53,19 +58,27 @@ module mmcspi {
 	status_t reg status = 0;
 	types_t reg types = 0;
 
-	proc_name sync();
+	reg req[2];
+	proc_name send_req(req);
+
+	ASYNCTX tx;
+	ASYNCRX rx;
 
 	miso = MISO;
 
+	tx.aTxIn = txin;
+	txout = tx.aTxOut;
+	rx.aRxIn = rxin;
+	rxout = rx.aRxOut;
+
+	// データ受信要求
+	func rx.aRxReq{
+		rx.aRxAck();
+	}
+	
 	func reset {
 		status.inited := 0;
 		init();
-		sync();
-	}
-
-	proc sync{
-		req_done();
-		finish();
 	}
 
 	proc init {
@@ -131,8 +144,7 @@ module mmcspi {
 		state recv_cmd16_resp {
 
 			goto poweron;
-			init_done();
-			idle();
+			send_req(INIT_DONE);
 				#ifdef CV
 				#endif
 
@@ -423,7 +435,7 @@ module mmcspi {
 		}
         state send_irq{
 			if(status.interrupt_enable){
-				interrupt_req();
+				send_req(INTR);
 			}
 			status.exec := LOW;
 			goto s1;
@@ -432,6 +444,20 @@ module mmcspi {
 			MOSI = HIGH;
         }
 	}
+
+	proc send_req {
+		if(req == INTR){
+			interrupt_req();
+		}
+		finish_init();
+        tx.aTxReq();
+	}
+
+	func tx.aTxAck {
+		send_req.finish();
+		idle();
+	}
+
 	func read {
 		wire read_data[32];
 		wire align[12];
@@ -460,7 +486,6 @@ module mmcspi {
 			(byteen == MEM_BYTE && (read_adrs[1:0] == 2'b10)):	rdata = {0x000000, read_data[23:16]};
 			(byteen == MEM_BYTE && (read_adrs[1:0] == 2'b11)):	rdata = {0x000000, read_data[31:24]};
 		}
-		sync();
 	}
 	func write {
 		variable new_data[32];
@@ -495,6 +520,5 @@ module mmcspi {
 			write_adrs <= 12'(0x214): {valid();}
 			else: store_amo_access_fault();
 		}
-		sync();
 	}
 }
