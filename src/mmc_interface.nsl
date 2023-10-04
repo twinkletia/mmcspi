@@ -2,6 +2,7 @@
 #include "mmc_interface.h"
 #include "ASYNCRX.h"
 #include "ASYNCTX.h"
+#include "100kHz_Gen.h"
 
 #define READ 2'b01
 #define WRITE 2'b10
@@ -18,16 +19,18 @@ module mmc_interface{
     reg adrs[12];
     reg byteena[3];
     reg data[32];
+	reg clk100kHz;
     proc_name reset_req();
     proc_name send_req(req,adrs,byteena,data);
 
     mmcspi rv32x_mmcspi;
 	ASYNCTX tx;
 	ASYNCRX rx;
-    
+    mmcStartupClkGen mscGen;
 
-    rv32x_mmcspi.m_clock = if(!inited) clk100kHz else clk25MHz;
-    rv32x_mmcspi.clk = if(!inited) clk100kHz else clk25MHz;
+	mscGen.m_clock = clk25MHz;
+    rv32x_mmcspi.m_clock = if(!inited) mscGen.clk100kHz else clk25MHz;
+    rv32x_mmcspi.clk = if(!inited) mscGen.clk100kHz else clk25MHz;
     //clk_slave := rv32x_mmcspi.SCLK;
     //SCLK = clk_slave;
     SCLK = rv32x_mmcspi.SCLK;

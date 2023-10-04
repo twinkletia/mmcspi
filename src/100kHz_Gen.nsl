@@ -1,0 +1,15 @@
+#include "100kHz_Gen.h"
+
+module mmcStartupClkGen{
+    reg clk_cnt[8] = 0;
+	reg outclk;
+
+	clk100kHz = outclk;
+
+	if(clk_cnt == 125-1) {
+		clk_cnt := 0;
+		outclk := ~outclk;
+	}else{
+		clk_cnt++;
+	}
+}
