@@ -44,15 +44,15 @@ module mmc_interface{
 	rv32x_mmcspi.txin = rx.aRxOut;
 
     func reset{
-        if(!tx.aTxAck) send_req(RESET,0,0,0);
+        if(!send_req) send_req(RESET,0,0,0);
     }
 
     func read{
-        if(!tx.aTxAck) send_req(READ,read_adrs,byteen,0);
+        if(!send_req) send_req(READ,read_adrs,byteen,0);
     }
 
     func write{
-        if(!tx.aTxAck) send_req(WRITE,write_adrs,byteen,wdata);
+        if(!send_req) send_req(WRITE,write_adrs,byteen,wdata);
     }
 
     proc send_req{
