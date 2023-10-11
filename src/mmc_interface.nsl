@@ -10,7 +10,6 @@
 
 module mmc_interface{
 
-    reg clk;
     reg inited = 0;
     reg req_flag;
 	func_self falling_edge();
@@ -26,15 +25,16 @@ module mmc_interface{
     mmcspi rv32x_mmcspi;
 	ASYNCTX tx;
 	ASYNCRX rx;
-    mmcStartupClkGen mscGen;
+    mmcStartupClkGen mmcSigGen;
 
-	mscGen.m_clock = clk25MHz;
-    rv32x_mmcspi.m_clock = if(!inited) mscGen.clk100kHz else clk25MHz;
-    rv32x_mmcspi.clk = if(!inited) mscGen.clk100kHz else clk25MHz;
+	mmcSigGen.m_clock = clk;
+    rv32x_mmcspi.m_clock = if(!inited) mmcSigGen.clk100kHz else mmcSigGen.clk25MHz;
+    rv32x_mmcspi.clk = if(!inited) mmcSigGen.clk100kHz else mmcSigGen.clk25MHz;
     //clk_slave := rv32x_mmcspi.SCLK;
     //SCLK = clk_slave;
     SCLK = rv32x_mmcspi.SCLK;
-	MOSI = rv32x_mmcspi.MOSI;
+	mmcSigGen.mosi = rv32x_mmcspi.MOSI;
+	MOSI = mmcSigGen.MOSI;
 	CS = rv32x_mmcspi.CS;
 	rv32x_mmcspi.MISO = MISO;
 	rdata = rv32x_mmcspi.rdata;

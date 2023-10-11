@@ -2,13 +2,19 @@
 
 module mmcStartupClkGen{
     reg clk_cnt[8] = 0;
-	reg outclk;
+	reg clk100k;
+	reg clk25m;
+	reg buffer;
 
-	clk100kHz = outclk;
+	clk100kHz = clk100k;
+	clk25MHz = clk25m;
+	MOSI = buffer;
+	clk25m := ~clk25m;
+	buffer := mosi;
 
-	if(clk_cnt == 125-1) {
+	if(clk_cnt == 250-1) {
 		clk_cnt := 0;
-		outclk := ~outclk;
+		clk100k := ~clk100k;
 	}else{
 		clk_cnt++;
 	}
