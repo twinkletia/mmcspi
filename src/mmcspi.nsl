@@ -246,7 +246,7 @@ module mmcspi {
 	proc idle {
 		state_name s0, s1, s2, send_irq;
 		state_name recv_data_packet_start_byte, recv_data_packet_data_block, recv_data_packet_crc;
-		state_name send_data_packet_start_byte, send_data_packet_data_block, send_data_packet_crc, recv_data_resp, write_busy_wait;
+		state_name send_data_interval, send_data_packet_start_byte, send_data_packet_data_block, send_data_packet_crc, recv_data_resp, write_busy_wait;
 		reg start_byte_buf[8] = 0;
 		reg start_byte[8] = 0xfe;
 		reg crc[16] = 0;
@@ -263,7 +263,7 @@ module mmcspi {
 				s0_cnt++;
 			}
 			CS = HIGH;
-			SCLK = LOW;
+			SCLK = clk;
 			MOSI = HIGH;
 		}
 
@@ -276,7 +276,7 @@ module mmcspi {
 					types.cmd_type != ADTC: goto send_irq;
 					types.cmd_type == ADTC: receive_bytes := types.transfer_bytes[12:0];
 					(types.cmd_type == ADTC && types.read):		goto recv_data_packet_start_byte;
-					(types.cmd_type == ADTC && types.write): 	goto send_data_packet_start_byte;
+					(types.cmd_type == ADTC && types.write): 	goto send_data_interval;
                 }
                 send_cmd({CSB,CTB,cmd,arg,CRC,CEB},types.resp_type);
             }
@@ -352,23 +352,35 @@ module mmcspi {
 			MOSI = HIGH;
 
 		}
-		state send_data_packet_start_byte {
-			reg start_byte_send_bit_pos[3] = 7;
+		state send_data_interval {
+			reg one_byte_cnt[3] = 0;
 			
 			if(r1state != 0x00){
 				goto send_irq;
 			}else{
-				if(start_byte_send_bit_pos == 0) {
-					start_byte_send_bit_pos := 7;
-					goto send_data_packet_data_block;
+				if(one_byte_cnt == 7) {
+					one_byte_cnt := 0;
+					goto send_data_packet_start_byte;
 				} else {
-					start_byte_send_bit_pos--;
+					one_byte_cnt++;
 				}
 			}
 			CS = LOW;
 			SCLK = clk;
+			MOSI = HIGH;
+		}
+		state send_data_packet_start_byte {
+			reg start_byte_send_bit_pos[3] = 7;
+			
+			if(start_byte_send_bit_pos == 0) {
+				start_byte_send_bit_pos := 7;
+				goto send_data_packet_data_block;
+			} else {
+				start_byte_send_bit_pos--;
+			}
+			CS = LOW;
+			SCLK = clk;
 			MOSI = start_byte[start_byte_send_bit_pos];
-
 		}
 		state send_data_packet_data_block {
 			//reg write_data_block_bit_pos[12] = 4095;
@@ -416,6 +428,8 @@ module mmcspi {
 				data_resp_bit_pos := 7;
 				if({data_resp[2:0],miso} == ACCEPTED){
 						goto write_busy_wait;
+				}else{
+						goto send_irq;
 				}
 			} else {
 				data_resp_bit_pos--;
@@ -473,6 +487,7 @@ module mmcspi {
 			read_adrs == 12'(0x20c): {read_data = 32'(cmd);}
 			read_adrs == 12'(0x210): {read_data = 32'(arg);}
 			read_adrs == 12'(0x214): {read_data = 32'(types);}
+			read_adrs == 12'(0x218): {read_data = 32'(data_resp);}
 			read_adrs <= 12'(0x214): {valid();}
 			else: load_access_fault();
 		}
