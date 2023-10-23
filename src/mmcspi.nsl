@@ -422,17 +422,23 @@ module mmcspi {
 
 		}
 		state recv_data_resp {
-			reg data_resp_bit_pos[3] = 7;
-
-			if(data_resp_bit_pos == 0) {
-				data_resp_bit_pos := 7;
-				if({data_resp[2:0],miso} == ACCEPTED){
-						goto write_busy_wait;
-				}else{
-						goto send_irq;
+			reg data_resp_bit_cnt[2] = 0;
+			reg data_res_start = 0;
+			if(miso == LOW) {
+				data_res_start := 1;
+			}
+			if(data_res_start == 1){
+				if(data_resp_bit_cnt == 3) {
+					data_resp_bit_cnt := 0;
+					data_res_start := 0;
+					if({data_resp[3:0],miso} == ACCEPTED){
+							goto write_busy_wait;
+					}else{
+							goto send_irq;
+					}
+				} else {
+					data_resp_bit_cnt++;
 				}
-			} else {
-				data_resp_bit_pos--;
 			}
 			data_resp := {data_resp[6:0], miso};	
 			CS = LOW;
@@ -465,6 +471,9 @@ module mmcspi {
 		}
 		finish_init();
         tx.aTxReq();
+		CS = HIGH;
+		SCLK = LOW;
+		MOSI = HIGH;
 	}
 
 	func tx.aTxAck {
