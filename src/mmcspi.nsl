@@ -83,6 +83,7 @@ module mmcspi {
 
 	proc init {
 		state_name poweron, dummy_clock, recv_cmd0_resp, recv_cmd1_resp, recv_cmd16_resp;
+		reg interval[4] = 0;
 
 		state poweron {
 			reg poweron_cnt[16] = 0;
@@ -120,7 +121,11 @@ module mmcspi {
 				#ifdef CV
 				#endif
 			}else{
-				send_cmd(CMD0, R1);
+				interval++;
+				if(interval == 15){
+					interval := 0;
+					send_cmd(CMD0, R1);
+				}
 			}
 			CS = HIGH;
 			SCLK = clk;

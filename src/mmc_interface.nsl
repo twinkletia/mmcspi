@@ -28,10 +28,8 @@ module mmc_interface{
     mmcStartupClkGen mmcSigGen;
 
 	mmcSigGen.m_clock = clk;
-    rv32x_mmcspi.m_clock = if(!inited) mmcSigGen.clk100kHz else mmcSigGen.clk25MHz;
-    rv32x_mmcspi.clk = if(!inited) mmcSigGen.clk100kHz else mmcSigGen.clk25MHz;
-    //clk_slave := rv32x_mmcspi.SCLK;
-    //SCLK = clk_slave;
+    rv32x_mmcspi.m_clock = mmcSigGen.clk;
+    rv32x_mmcspi.clk = mmcSigGen.clk;
     SCLK = rv32x_mmcspi.SCLK;
 	mmcSigGen.mosi = rv32x_mmcspi.MOSI;
 	MOSI = mmcSigGen.MOSI;
@@ -75,7 +73,7 @@ module mmc_interface{
     
 	func rx.aRxReq{ 
         any{
-            rv32x_mmcspi.finish_init: inited := 1;	
+            rv32x_mmcspi.finish_init: mmcSigGen.accelerate();	
             rv32x_mmcspi.interrupt_req: interrupt_req();
         }   	
         rx.aRxAck();

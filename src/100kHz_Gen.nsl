@@ -1,21 +1,30 @@
 #include "100kHz_Gen.h"
+#define CNT_100KHZ 250	
 
 module mmcStartupClkGen{
     reg clk_cnt[8] = 0;
 	reg clk100k;
 	reg clk25m;
-	reg buffer;
+	reg buffer_25m;
+	reg buffer_100k = 1;
+	reg mmc_inited = 0;
+	reg prev_mosi = 1;
 
-	clk100kHz = clk100k;
-	clk25MHz = clk25m;
-	MOSI = buffer;
+	clk = if(!mmc_inited) clk100k else clk25m;
+	MOSI = if(!mmc_inited) buffer_100k else buffer_25m;
+
 	clk25m := ~clk25m;
-	buffer := mosi;
-
-	if(clk_cnt == 250-1) {
+	buffer_25m := mosi;
+	if(clk_cnt == CNT_100KHZ-1) {
 		clk_cnt := 0;
 		clk100k := ~clk100k;
+		buffer_100k := mosi;
 	}else{
 		clk_cnt++;
 	}
+	
+	func accelerate{
+		mmc_inited := 1;
+	}
 }
+

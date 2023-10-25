@@ -1,7 +1,7 @@
 declare mmcStartupClkGen
 {
-    output clk100kHz;
-    output clk25MHz;
+    output clk;
     input mosi;
     output MOSI;
+    func_in accelerate();
 }
