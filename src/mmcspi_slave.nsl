@@ -39,6 +39,9 @@ module mmcspi_slave {
 	reg exception_ptr[4] = 0;
 	reg group_flag = 0;
 	mem erase_exception[16][32];
+	reg .attribute(.rev_clk) miso = HIGH;
+
+	MISO = miso;
 	
 	state s1 if(CS == LOW){
 			if(cmd_buf_bit_pos == 48-1) {
@@ -48,7 +51,7 @@ module mmcspi_slave {
 				cmd_buf_bit_pos++;
 			}
 			cmd_buf := {cmd_buf[46:0], MOSI};
-		MISO = HIGH;
+		miso := HIGH;
 	}
 	state s2 {
 		wire cmd[6];
@@ -129,7 +132,7 @@ module mmcspi_slave {
 				cmd == 58:{response_buf := {r1resp,ocr}; response_size := 40-1; goto s3;}	//read ocr
 				else: {response_buf := 40'(0x04); response_size := 8-1; goto s3;}	//unsupported command(response illegal cmd bit)
 			}
-		MISO = HIGH;
+		miso := HIGH;
 	}
 	func block_data_valid {
 		block_data := read_block_data;
@@ -149,7 +152,7 @@ module mmcspi_slave {
 			} else {
 				response_buf_bit_pos++;
 			}
-		MISO = response_buf[response_size-response_buf_bit_pos];
+		miso := response_buf[response_size-response_buf_bit_pos];
 	}
 	state s4 {
 			if(block_bit_pos == (block_size-1)) {
@@ -158,7 +161,7 @@ module mmcspi_slave {
 			} else {
 				block_bit_pos++;
 			}
-		MISO = block_data[block_bit_pos];
+		miso := block_data[block_bit_pos];
 	}
 	state s4_5 {
 			if(block_bit_pos == (16-1)) {
@@ -168,7 +171,7 @@ module mmcspi_slave {
 			} else {
 				block_bit_pos++;
 			}
-		MISO = HIGH;
+		miso := HIGH;
 	}
 	state s5{	//recv start byte
 				if({start_byte_buf[6:0], MOSI} == start_byte) {
@@ -177,18 +180,17 @@ module mmcspi_slave {
 				} else {
 					start_byte_buf := {start_byte_buf[6:0], MOSI};
 				}
-		MISO = HIGH;
+		miso := HIGH;
 	}
 	state s6{	//send block data
 				if(block_bit_pos == (4096-1)) {
-					//valid({data_block[4094:0], miso});
 					block_bit_pos := 0;
 					goto s7;
 				} else {
 					block_bit_pos++;
 				}
 				block_data := {block_data[4094:0], MOSI};
-		MISO = HIGH;
+		miso := HIGH;
 	}
 	state s7{	//recv crc
 		reg crc_bit_pos[4] = 0;
@@ -199,24 +201,23 @@ module mmcspi_slave {
 				} else {
 					crc_bit_pos++;
 				}
-				//crc := {crc[14:0], miso};
-		MISO = HIGH;
+		miso := HIGH;
 	}
 	state s8{	//send data resp
-		reg write_response[8] = 0x05;
+		reg write_response[8] = 0xE5;
 			if(response_buf_bit_pos == 7) {
 				response_buf_bit_pos := 0;
 				goto s9;
 			} else {
 				response_buf_bit_pos++;
 			}
-		MISO = write_response[response_size-response_buf_bit_pos];//response_buf[response_size-response_buf_bit_pos];
+		miso := write_response[response_size-response_buf_bit_pos];//response_buf[response_size-response_buf_bit_pos];
 	}
 	state s9{	//write busy wait
 		write_op := 0;
 		write(cmd_buf[39:8], block_data);
 		goto s1;
-		MISO = HIGH;	//not busy
+		miso := HIGH;	//not busy
 	}
 	state busy{
 		reg busy_cnt[5] = 0;
@@ -228,9 +229,9 @@ module mmcspi_slave {
 				busy_cnt++;
 			}
 		if(busy_cnt >= 24){
-			MISO = HIGH;
+			miso := HIGH;
 		}else{
-			MISO = LOW;
+			miso := LOW;
 		}
 	}
 }
