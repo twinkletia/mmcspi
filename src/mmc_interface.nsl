@@ -2,7 +2,7 @@
 #include "mmc_interface.h"
 #include "ASYNCRX.h"
 #include "ASYNCTX.h"
-#include "100kHz_Gen.h"
+#include "mmcSigGen.h"
 
 #define READ 2'b01
 #define WRITE 2'b10
@@ -25,7 +25,7 @@ module mmc_interface{
     mmcspi rv32x_mmcspi;
 	ASYNCTX tx;
 	ASYNCRX rx;
-    mmcStartupClkGen mmcSigGen;
+    sigGen mmcSigGen;
 
 	mmcSigGen.m_clock = clk;
     rv32x_mmcspi.m_clock = mmcSigGen.clk;

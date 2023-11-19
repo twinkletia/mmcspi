@@ -1,4 +1,4 @@
-declare mmcStartupClkGen
+declare sigGen
 {
     output clk;
     input mosi;

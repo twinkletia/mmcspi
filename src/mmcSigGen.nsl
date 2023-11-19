@@ -1,7 +1,7 @@
-#include "100kHz_Gen.h"
+#include "mmcSigGen.h"
 #define CNT_100KHZ 250	
 
-module mmcStartupClkGen{
+module sigGen{
     reg clk_cnt[8] = 0;
 	reg clk100k;
 	reg clk25m;
